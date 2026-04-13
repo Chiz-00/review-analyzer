@@ -56,6 +56,7 @@ I18N = {
         'region_label':'🌏 수집 국가',
         'btn_start':'▶  분석 시작',
         'btn_dl':'📥 엑셀 다운로드',
+        'btn_csv':'📄 CSV 다운로드',
         'result_title':'📊 분석 결과 요약',
         'metric_total':'총 리뷰',
         'metric_avg':'평균 평점',
@@ -158,6 +159,7 @@ I18N = {
         'region_label':'🌏 収集国',
         'btn_start':'▶  分析開始',
         'btn_dl':'📥 Excelダウンロード',
+        'btn_csv':'📄 CSVダウンロード',
         'result_title':'📊 分析結果サマリー',
         'metric_total':'総レビュー',
         'metric_avg':'平均評価',
@@ -325,14 +327,82 @@ def analyze_kw(df, t):
     neg_tx=df[df['평점']<=2]['내용'].dropna()
     pos_tx=df[df['평점']>=4]['내용'].dropna()
     neg_total=len(neg_tx); pos_total=len(pos_tx)
-    NEG_EXPR=['없애','별로','최악','짜증','불편','아쉽','문제','버그','오류',
-              '싫','노잼','지루','힘들','망','안됨','안돼','못하','에러','튕',
-              '렉','느려','발열','뻥','과금','현질','뽑기','비싸','천장','불만',
-              '환불','삭제','망겜','없애셈','고쳐','해주세요','해줘요','개선해',
-              'ㅡㅡ','ㅠ','ㅜ','갈증','낚이','실망','문의','뭡니까','말았다']
-    POS_EXPR=['재밌','좋아','최고','훌륭','완벽','갓','꿀잼','대박','짱','추천',
-              '만족','즐거','신나','감동','몰입','좋음','좋네','좋다','재미있',
-              '흥미','멋지','예쁘','이쁘','퀄리티','매력']
+    # ── 규칙 기반 감성분석 고도화 (#7)
+    # 게임 슬랭 포함 확장 부정 표현 사전
+    NEG_EXPR=[
+        # 직접 불만
+        '없애','별로','최악','짜증','불편','아쉽','문제','버그','오류',
+        '싫','노잼','지루','힘들','망','안됨','안돼','못하','에러','튕',
+        '렉','느려','발열','뻥','과금','현질','뽑기','비싸','천장','불만',
+        '환불','삭제','망겜','없애셈','고쳐','해주세요','해줘요','개선해',
+        'ㅡㅡ','ㅠ','ㅜ','갈증','낚이','실망','문의','뭡니까','말았다',
+        # 게임 커뮤니티 슬랭 부정
+        '런함','런했','접음','접었','꼬접','탈출','도망','지움','삭제함',
+        '흑우','봉','호구','호갱','호구됨','봉됨',
+        '없데이트','없뎃','노업','노업뎃',
+        '수금','뽑아먹','등골','빨아먹','뜯어먹','갈취',
+        '기싸움','통보','묵살','유기','방치','무시','불통','소통없',
+        '조작겜','확률조작','운겜','운빨','사행성','도박','카지노',
+        '섭종','폭망','말아먹','망했','나락','쓰레기','폐기','폐급',
+        '뒤통수','통수','사기','기만','거짓말','약속안','약속어기',
+        '무능','개판','엉망','최하','최저','ㄹㅈㄷ','ㅈ망','ㅈ같',
+        '하지마','하지마세요','비추','비추천','추천금지',
+        '열받','화남','뿔남','분노','짜증폭발','열이받',
+        '돈낭비','시간낭비','후회','아깝','아까워','아깝다',
+    ]
+    # 게임 슬랭 포함 확장 긍정 표현 사전
+    POS_EXPR=[
+        # 기본 긍정
+        '재밌','좋아','최고','훌륭','완벽','갓','꿀잼','대박','짱','추천',
+        '만족','즐거','신나','감동','몰입','좋음','좋네','좋다','재미있',
+        '흥미','멋지','예쁘','이쁘','퀄리티','매력',
+        # 게임 커뮤니티 슬랭 긍정
+        '갓겜','인생겜','명작','갓작','꿀','꿀템','꿀재','존잼','핵잼',
+        '잼남','잼있','잼써','잼네','재밋','재밌네','재밌어','재밌다',
+        '굳굳','굿굿','굿게임','굿겜','갓','레전드','레전','ㄹㅇ좋',
+        '강추','강력추천','완전추천','진짜추천',
+        '중독','빠져','못끊','계속하','계속 하','오래하',
+        '잘만든','잘 만든','퀄높','퀄이높','퀄좋','퀄이좋',
+        '재미짐','재미있음','재미있네','재미있어',
+        '힐링','낭만','추억','감성','따뜻','포근',
+    ]
+    # 역접어 패턴 (뒤에 오는 감정이 최종 감정)
+    REVERSAL_KW=['한데','지만','는데','근데','그러나','하지만','그런데',
+                 '이지만','이긴','긴 하','긴하','이긴 하','이긴하']
+
+    def sentiment_score(text):
+        '''감성 점수 계산: 양수=긍정, 음수=부정, 0=중립'''
+        t_lower = text.lower()
+        score = 0
+        # 강도 부사
+        intensifiers = ['진짜','완전','너무','엄청','매우','ㄹㅇ','레알','개','존']
+        # 역접어 위치 감지
+        reversal_pos = -1
+        for rw in REVERSAL_KW:
+            idx = t_lower.find(rw)
+            if idx != -1:
+                reversal_pos = idx
+                break
+        # 역접어 있으면 앞/뒤 분리
+        if reversal_pos > 0:
+            before = t_lower[:reversal_pos]
+            after  = t_lower[reversal_pos:]
+            # 앞부분 감성 (가중치 낮게)
+            for p in POS_EXPR:
+                if p in before: score += 1
+            for n in NEG_EXPR:
+                if n in before: score -= 1
+            # 뒷부분 감성 (가중치 높게 — 최종 감정)
+            for p in POS_EXPR:
+                if p in after: score += 2
+            for n in NEG_EXPR:
+                if n in after: score -= 2
+        else:
+            for p in POS_EXPR:
+                if p in t_lower: score += 2
+            for n in NEG_EXPR:
+                if n in t_lower: score -= 2
+        return score
 
     def cnt_neg(texts, kw_dict, used):
         res={}
@@ -360,12 +430,10 @@ def analyze_kw(df, t):
             ex_best=[]; ex_good=[]; ex_any=[]
             for raw,hit in matched:
                 if len(raw)<8 or len(raw)>150 or raw.count('?')>=2 or raw in used: continue
-                rl=raw.lower()
-                has_neg=any(n in rl for n in NEG_EXPR)
-                has_pos=any(p in rl for p in POS_EXPR)
                 kv=any(k in raw for k in hit)
-                if kv and has_pos and not has_neg and len(ex_best)<3: ex_best.append(raw[:90])
-                elif kv and not has_neg and len(ex_good)<3: ex_good.append(raw[:90])
+                sc=sentiment_score(raw)
+                if kv and sc>=2 and len(ex_best)<3: ex_best.append(raw[:90])
+                elif kv and sc>=0 and len(ex_good)<3: ex_good.append(raw[:90])
                 elif kv and len(ex_any)<3: ex_any.append(raw[:90])
             ex_final=[]
             for pool in [ex_best,ex_good,ex_any]:
@@ -488,6 +556,7 @@ def mk_dash(ws, df, t):
     ws.row_dimensions[46].height=10; _sec(ws,47,1,16,t['ch_top10'])
     _hr(ws,48,[t['c_user'],t['c_score'],t['c_like'],t['c_content'],t['hd_date']],bg=C_MID)
     ws.merge_cells('D48:O48')
+    _w(ws,48,16,t['hd_date'],bold=True,sz=10,fg=C_WHITE,bg=C_MID,h='center')
     for i,(_,r) in enumerate(df.nlargest(10,'좋아요').iterrows(),49):
         bg=C_LIGHT if i%2==0 else C_WHITE; ws.row_dimensions[i].height=36
         _w(ws,i,1,r['사용자'],sz=9,bg=bg,h='center')
@@ -632,6 +701,12 @@ def gen_excel_bytes(df, doc_lang):
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.getvalue()
 
+def gen_csv_bytes(df):
+    dk=['리뷰ID','사용자','평점','내용','작성일','작성월','좋아요','개발사답변','답변일','앱버전']
+    buf=io.StringIO()
+    df[dk].to_csv(buf, index=False, encoding='utf-8')
+    return buf.getvalue().encode('utf-8-sig')  # BOM 포함 UTF-8 (엑셀 호환)
+
 def parse_app_id(text):
     text=text.strip()
     m=re.search(r'id=([a-zA-Z0-9._]+)',text)
@@ -685,6 +760,30 @@ with st.sidebar:
     st.markdown(f'**{t["made_by"]}**')
     st.markdown('VIC GAME STUDIOS')
     st.markdown('일본사업실 박경원')
+    st.markdown('---')
+    with st.expander('📋 패치 노트 / Patch Notes'):
+        st.markdown('''
+**v2.3** *(현재 버전)*
+- 🔍 규칙 기반 감성분석 고도화
+  - 게임 슬랭 사전 추가 (갓겜·런함·흑우 등)
+  - 역접어 패턴 감지 (한데/지만/근데)
+  - 감성 점수 시스템 도입
+- 📄 리뷰 전체 CSV 다운로드 기능 추가 (UTF-8)
+- 📋 패치 노트 UI 추가
+- 🗓️ 대시보드 날짜 헤더 수정
+
+**v2.2**
+- 🌏 수집 국가 확장 (KR/JP → KR/JP/US/TW/GB)
+- 🌐 UI 언어 전환 전체 적용
+- 🔧 여론분석 키워드 전체 출력 버그 수정
+- 📊 문서 언어 JP 한국어 잔존 버그 수정
+- 👤 만든이 표기 정리
+
+**v2.1**
+- 📈 월별 추이 차트 복합 차트로 개선
+- 🟢 긍정 대표 리뷰 예시 필터 강화
+- 🔄 키워드 간 예시 중복 방지
+        ''')
 
 st.markdown(f'# {t["title"]}')
 st.markdown('---')
@@ -807,7 +906,16 @@ if btn_start:
         m2.metric(t['metric_avg'],   f'{avg:.2f} ★')
         m3.metric(t['metric_pos'],   f'{pos:,}{t["unit_count"]} ({pos/len(df)*100:.1f}%)')
         m4.metric(t['metric_neg'],   f'{neg:,}{t["unit_count"]} ({neg/len(df)*100:.1f}%)')
-        fname=f'{app_id.split(".")[-1]}_review_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'
-        st.download_button(label=t['btn_dl'],data=excel_bytes,file_name=fname,
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            use_container_width=True)
+        fname_base=f'{app_id.split(".")[-1]}_review_{datetime.now().strftime("%Y%m%d_%H%M")}'
+        csv_bytes = gen_csv_bytes(df)
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.download_button(label=t['btn_dl'],data=excel_bytes,
+                file_name=f'{fname_base}.xlsx',
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                use_container_width=True)
+        with dl2:
+            st.download_button(label=t['btn_csv'],data=csv_bytes,
+                file_name=f'{fname_base}.csv',
+                mime='text/csv',
+                use_container_width=True)
