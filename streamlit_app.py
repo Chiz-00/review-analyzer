@@ -15,7 +15,7 @@ except ImportError:
     HAS_SCRAPER = False
 
 try:
-    from app_store_scraper import AppStore
+    import requests as _requests
     HAS_APP_STORE = True
 except ImportError:
     HAS_APP_STORE = False
@@ -537,16 +537,22 @@ def mk_dash(ws, df, t):
         ws.cell(row=9,column=c1).fill=_fill(col)
         for r,h in [(6,18),(7,38),(8,16),(9,6)]: ws.row_dimensions[r].height=h
     dist=df['평점'].value_counts().sort_index()
-    ws.cell(row=1,column=19,value=t['c_score']); ws.cell(row=1,column=20,value=t['rev_cnt'])
-    for i,star in enumerate([1,2,3,4,5],2):
-        ws.cell(row=i,column=19,value=f'{star}★'); ws.cell(row=i,column=20,value=int(dist.get(star,0)))
-    ws.cell(row=8,column=19,value=''); ws.cell(row=8,column=20,value=t['rev_cnt'])
-    for i,(k,v) in enumerate([(t['pie_pos'],int((df['평점']>=4).sum())),(t['pie_neu'],int((df['평점']==3).sum())),(t['pie_neg'],int((df['평점']<=2).sum()))],9):
-        ws.cell(row=i,column=19,value=k); ws.cell(row=i,column=20,value=v)
     mo=df.groupby('작성월').agg(cnt=('평점','count'),avg=('평점','mean')).reset_index()
-    ws.cell(row=13,column=19,value=''); ws.cell(row=13,column=20,value=t['rev_cnt']); ws.cell(row=13,column=21,value=t['avg_sc'])
+
+    def _hidden(ws, row, col, val):
+        c = ws.cell(row=row, column=col, value=val)
+        c.font = Font(color='FFFFFF', size=9, name='Arial')  # 흰색 글씨 = 숨김
+        return c
+
+    _hidden(ws,1,19,t['c_score']); _hidden(ws,1,20,t['rev_cnt'])
+    for i,star in enumerate([1,2,3,4,5],2):
+        _hidden(ws,i,19,f'{star}★'); _hidden(ws,i,20,int(dist.get(star,0)))
+    _hidden(ws,8,19,''); _hidden(ws,8,20,t['rev_cnt'])
+    for i,(k,v) in enumerate([(t['pie_pos'],int((df['평점']>=4).sum())),(t['pie_neu'],int((df['평점']==3).sum())),(t['pie_neg'],int((df['평점']<=2).sum()))],9):
+        _hidden(ws,i,19,k); _hidden(ws,i,20,v)
+    _hidden(ws,13,19,''); _hidden(ws,13,20,t['rev_cnt']); _hidden(ws,13,21,t['avg_sc'])
     for i,r in enumerate(mo.itertuples(),14):
-        ws.cell(row=i,column=19,value=r.작성월); ws.cell(row=i,column=20,value=r.cnt); ws.cell(row=i,column=21,value=round(r.avg,2))
+        _hidden(ws,i,19,r.작성월); _hidden(ws,i,20,r.cnt); _hidden(ws,i,21,round(r.avg,2))
     _sec(ws,11,1,8,t['ch_dist'])
     bar=BarChart(); bar.type='col'; bar.style=10; bar.title=None; bar.legend=None
     bar.y_axis.title=t['rev_cnt']; bar.width=15; bar.height=12
@@ -757,6 +763,42 @@ def parse_appstore_id(text):
     if re.match(r'^\d+$', text): return text
     return None
 
+def fetch_appstore_reviews(app_id, country, how_many=1000):
+    import requests, math
+    all_reviews = []
+    max_page = min(math.ceil(how_many / 50), 10)  # Apple RSS는 최대 10페이지(500건)
+    for page in range(1, max_page + 1):
+        url = (f'https://itunes.apple.com/{country}/rss/customerreviews/'
+               f'page={page}/id={app_id}/sortby=mostrecent/json')
+        try:
+            resp = requests.get(url, timeout=15)
+            data = resp.json()
+            entries = data.get('feed', {}).get('entry', [])
+            if not entries:
+                break
+            # 첫 번째 entry는 앱 정보 - 건너뜀
+            for e in entries:
+                if 'im:rating' not in e:
+                    continue
+                author = e.get('author', {}).get('name', {}).get('label', '')
+                rating = int(e.get('im:rating', {}).get('label', 0))
+                content = e.get('content', {}).get('label', '')
+                title   = e.get('title', {}).get('label', '')
+                updated = e.get('updated', {}).get('label', '')[:10]
+                version = e.get('im:version', {}).get('label', '')
+                rev_id  = e.get('id', {}).get('label', '')
+                all_reviews.append({
+                    'id': rev_id, 'userName': author,
+                    'rating': rating,
+                    'review': f'{title} {content}'.strip(),
+                    'date': updated, 'version': version,
+                })
+            if len(entries) < 2:  # 앱 정보만 있고 리뷰 없으면 종료
+                break
+        except Exception:
+            break
+    return all_reviews
+
 def build_df_appstore(raw):
     '''앱스토어 리뷰 → DataFrame (구글 플레이와 동일 컬럼 구조)'''
     rows=[]
@@ -828,7 +870,12 @@ with st.sidebar:
     st.markdown('---')
     with st.expander('📋 패치 노트 / Patch Notes'):
         st.markdown('''
-**v2.4** *(현재 버전)*
+**v2.5** *(현재 버전)*
+- 🔒 다운로드 후 결과창 유지 개선
+- 📊 대시보드 숨김 데이터 노출 수정
+- 🍎 앱스토어 500건 제한 안내 문구 추가
+
+**v2.4**
 - 🍎 앱스토어(iOS) 리뷰 수집 지원 추가
 - 📄 CSV 문서 언어(KR/JP) 반영
 
@@ -888,14 +935,16 @@ with col3:
     region_code = region_sel[:2]
 
 if is_appstore:
-    st.info('🍎 앱스토어 모드 — 앱스토어 URL 또는 숫자 ID를 입력해주세요.' if ui_code=='KR' else '🍎 App Storeモード — URLまたは数字IDを入力してください。')
+    if ui_code == 'KR':
+        st.info('🍎 앱스토어 모드 — 앱스토어 URL 또는 숫자 ID를 입력해주세요.\n\n⚠️ Apple RSS API 정책상 최대 **500건**까지만 수집 가능합니다.')
+    else:
+        st.info('🍎 App Storeモード — URLまたは数字IDを入力してください。\n\n⚠️ Apple RSS APIの制限により、最大 **500件** まで収集可能です。')
 
 st.markdown('---')
 btn_start = st.button(t['btn_start'], use_container_width=True)
 
 log_placeholder    = st.empty()
 progress_bar       = st.empty()
-result_placeholder = st.empty()
 
 if btn_start:
     is_count_mode = (mode == t['mode_count'])
@@ -919,16 +968,13 @@ if btn_start:
     if is_appstore:
         as_id = parse_appstore_id(url_input)
         if not as_id: st.error(t['err_no_appid']); st.stop()
-        if not HAS_APP_STORE: st.error(t['err_no_appstore']); st.stop()
+        pass  # requests는 기본 내장
 
         country_as = AS_REGIONS.get(region_code, 'us')
         add_log(f'🍎 앱스토어 수집 시작 | ID: {as_id} | 국가: {region_code}')
         try:
-            app_name = f'app_{as_id}'
-            scraper = AppStore(country=country_as, app_name=app_name, app_id=as_id)
-            how_many = target if is_count_mode else 5000
-            scraper.review(how=how_many)
-            raw_reviews = scraper.reviews
+            how_many = target if is_count_mode else 500
+            raw_reviews = fetch_appstore_reviews(as_id, country_as, how_many)
             add_log(f'✅ {len(raw_reviews):,}개 수집 완료')
         except Exception as e:
             add_log(f'❌ 수집 실패: {e}'); st.stop()
@@ -1029,25 +1075,37 @@ if btn_start:
     prog.progress(100, text=t['prog_done'])
     add_log(t['log_finish'])
 
-    with result_placeholder.container():
-        st.markdown('---')
-        st.markdown(f'### {t["result_title"]}')
-        m1,m2,m3,m4 = st.columns(4)
-        avg=df['평점'].mean(); pos=(df['평점']>=4).sum(); neg=(df['평점']<=2).sum()
-        m1.metric(t['metric_total'], f'{len(df):,}{t["unit_count"]}')
-        m2.metric(t['metric_avg'],   f'{avg:.2f} ★')
-        m3.metric(t['metric_pos'],   f'{pos:,}{t["unit_count"]} ({pos/len(df)*100:.1f}%)')
-        m4.metric(t['metric_neg'],   f'{neg:,}{t["unit_count"]} ({neg/len(df)*100:.1f}%)')
-        fname_base=f'{fname_prefix}_review_{datetime.now().strftime("%Y%m%d_%H%M")}'
-        csv_bytes = gen_csv_bytes(df, doc_code)
-        dl1, dl2 = st.columns(2)
-        with dl1:
-            st.download_button(label=t['btn_dl'],data=excel_bytes,
-                file_name=f'{fname_base}.xlsx',
-                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                use_container_width=True)
-        with dl2:
-            st.download_button(label=t['btn_csv'],data=csv_bytes,
-                file_name=f'{fname_base}.csv',
-                mime='text/csv',
-                use_container_width=True)
+    # session_state에 결과 저장 (다운로드 후에도 유지)
+    fname_base = f'{fname_prefix}_review_{datetime.now().strftime("%Y%m%d_%H%M")}'
+    st.session_state['result'] = {
+        'df': df,
+        'excel_bytes': excel_bytes,
+        'csv_bytes': gen_csv_bytes(df, doc_code),
+        'fname_base': fname_base,
+        'avg': df['평점'].mean(),
+        'pos': int((df['평점']>=4).sum()),
+        'neg': int((df['평점']<=2).sum()),
+        'total': len(df),
+    }
+
+# ── 결과 표시 (session_state 기반 — 다운로드 후에도 유지)
+if 'result' in st.session_state:
+    r = st.session_state['result']
+    st.markdown('---')
+    st.markdown(f'### {t["result_title"]}')
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric(t['metric_total'], f'{r["total"]:,}{t["unit_count"]}')
+    m2.metric(t['metric_avg'],   f'{r["avg"]:.2f} ★')
+    m3.metric(t['metric_pos'],   f'{r["pos"]:,}{t["unit_count"]} ({r["pos"]/r["total"]*100:.1f}%)')
+    m4.metric(t['metric_neg'],   f'{r["neg"]:,}{t["unit_count"]} ({r["neg"]/r["total"]*100:.1f}%)')
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(label=t['btn_dl'], data=r['excel_bytes'],
+            file_name=f'{r["fname_base"]}.xlsx',
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            use_container_width=True)
+    with dl2:
+        st.download_button(label=t['btn_csv'], data=r['csv_bytes'],
+            file_name=f'{r["fname_base"]}.csv',
+            mime='text/csv',
+            use_container_width=True)
