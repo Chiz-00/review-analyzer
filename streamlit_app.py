@@ -15,6 +15,12 @@ except ImportError:
     HAS_SCRAPER = False
 
 try:
+    from app_store_scraper import AppStore
+    HAS_APP_STORE = True
+except ImportError:
+    HAS_APP_STORE = False
+
+try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.chart import BarChart, PieChart, LineChart, Reference
@@ -38,6 +44,15 @@ REGIONS = {
     'GB': ('en', 'gb'),
 }
 
+# 앱스토어 국가 코드
+AS_REGIONS = {
+    'KR': 'kr',
+    'JP': 'jp',
+    'US': 'us',
+    'TW': 'tw',
+    'GB': 'gb',
+}
+
 I18N = {
     'KR': {
         'title':'🎮 구글 플레이 리뷰 분석기',
@@ -53,7 +68,13 @@ I18N = {
         'count_label':'수집 개수',
         'from_label':'시작일',
         'to_label':'종료일',
+        'platform_label':'📱 플랫폼',
+        'platform_gp':'🤖 구글 플레이',
+        'platform_as':'🍎 앱스토어 (iOS)',
         'region_label':'🌏 수집 국가',
+        'appstore_url_ph':'https://apps.apple.com/kr/app/앱이름/id123456789  또는  앱 ID(숫자)',
+        'err_no_appstore':'app-store-scraper가 설치되지 않았습니다.',
+        'err_no_appid':'올바른 앱스토어 URL 또는 앱 ID(숫자)를 입력해주세요.',
         'btn_start':'▶  분석 시작',
         'btn_dl':'📥 엑셀 다운로드',
         'btn_csv':'📄 CSV 다운로드',
@@ -156,7 +177,13 @@ I18N = {
         'count_label':'収集件数',
         'from_label':'開始日',
         'to_label':'終了日',
+        'platform_label':'📱 プラットフォーム',
+        'platform_gp':'🤖 Google Play',
+        'platform_as':'🍎 App Store (iOS)',
         'region_label':'🌏 収集国',
+        'appstore_url_ph':'https://apps.apple.com/jp/app/アプリ名/id123456789  または  アプリID(数字)',
+        'err_no_appstore':'app-store-scraperがインストールされていません。',
+        'err_no_appid':'正しいApp StoreのURLまたはアプリID(数字)を入力してください。',
         'btn_start':'▶  分析開始',
         'btn_dl':'📥 Excelダウンロード',
         'btn_csv':'📄 CSVダウンロード',
@@ -701,18 +728,56 @@ def gen_excel_bytes(df, doc_lang):
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.getvalue()
 
-def gen_csv_bytes(df):
+def gen_csv_bytes(df, doc_lang='KR'):
+    t = I18N[doc_lang]
     dk=['리뷰ID','사용자','평점','내용','작성일','작성월','좋아요','개발사답변','답변일','앱버전']
+    col_names=[t['c_id'],t['c_user'],t['c_score'],t['c_content'],t['c_date'],
+               t['c_month'],t['c_like'],t['c_reply'],t['c_rdate'],t['c_ver']]
+    out_df = df[dk].copy()
+    out_df.columns = col_names
     buf=io.StringIO()
-    df[dk].to_csv(buf, index=False, encoding='utf-8')
+    out_df.to_csv(buf, index=False)
     return buf.getvalue().encode('utf-8-sig')  # BOM 포함 UTF-8 (엑셀 호환)
 
 def parse_app_id(text):
+    '''구글 플레이 패키지명 추출'''
     text=text.strip()
     m=re.search(r'id=([a-zA-Z0-9._]+)',text)
     if m: return m.group(1)
     if re.match(r'^[a-zA-Z][a-zA-Z0-9._]+$',text): return text
     return None
+
+def parse_appstore_id(text):
+    '''앱스토어 앱 ID 추출 (숫자)'''
+    text=text.strip()
+    # URL 패턴: /id123456789
+    m=re.search(r'/id(\d+)', text)
+    if m: return m.group(1)
+    # 순수 숫자
+    if re.match(r'^\d+$', text): return text
+    return None
+
+def build_df_appstore(raw):
+    '''앱스토어 리뷰 → DataFrame (구글 플레이와 동일 컬럼 구조)'''
+    rows=[]
+    for r in raw:
+        at = r.get('date')
+        if isinstance(at, str):
+            try: at = datetime.strptime(at[:10], '%Y-%m-%d')
+            except: at = None
+        rows.append({
+            '리뷰ID'    : str(r.get('id','')),
+            '사용자'    : r.get('userName','') or r.get('name',''),
+            '평점'      : int(r.get('rating', r.get('score', 0))),
+            '내용'      : (r.get('review','') or r.get('content','')).replace('\n',' '),
+            '작성일'    : at.strftime('%Y-%m-%d') if at else '',
+            '작성월'    : at.strftime('%Y-%m') if at else '',
+            '좋아요'    : 0,          # 앱스토어는 좋아요 미제공
+            '개발사답변': '',          # 앱스토어는 개발사 답변 미제공
+            '답변일'    : '',
+            '앱버전'    : r.get('version',''),
+        })
+    return pd.DataFrame(rows).sort_values('작성일',ascending=False).reset_index(drop=True)
 
 def build_df(raw):
     rows=[]
@@ -763,7 +828,11 @@ with st.sidebar:
     st.markdown('---')
     with st.expander('📋 패치 노트 / Patch Notes'):
         st.markdown('''
-**v2.3** *(현재 버전)*
+**v2.4** *(현재 버전)*
+- 🍎 앱스토어(iOS) 리뷰 수집 지원 추가
+- 📄 CSV 문서 언어(KR/JP) 반영
+
+**v2.3**
 - 🔍 규칙 기반 감성분석 고도화
   - 게임 슬랭 사전 추가 (갓겜·런함·흑우 등)
   - 역접어 패턴 감지 (한데/지만/근데)
@@ -788,7 +857,19 @@ with st.sidebar:
 st.markdown(f'# {t["title"]}')
 st.markdown('---')
 
-url_input = st.text_input(t['url_label'], placeholder=t['url_ph'])
+# 플랫폼 선택
+platform = st.radio(
+    t['platform_label'],
+    [t['platform_gp'], t['platform_as']],
+    horizontal=True
+)
+is_appstore = (platform == t['platform_as'])
+
+if is_appstore:
+    url_input = st.text_input(t['url_label'], placeholder=t['appstore_url_ph'])
+else:
+    url_input = st.text_input(t['url_label'], placeholder=t['url_ph'])
+
 col1, col2 = st.columns([1, 2])
 with col1:
     mode = st.radio(t['mode_label'], [t['mode_count'], t['mode_period']], horizontal=True)
@@ -806,6 +887,9 @@ with col3:
     region_sel  = st.selectbox(t['region_label'], region_options)
     region_code = region_sel[:2]
 
+if is_appstore:
+    st.info('🍎 앱스토어 모드 — 앱스토어 URL 또는 숫자 ID를 입력해주세요.' if ui_code=='KR' else '🍎 App Storeモード — URLまたは数字IDを入力してください。')
+
 st.markdown('---')
 btn_start = st.button(t['btn_start'], use_container_width=True)
 
@@ -814,85 +898,133 @@ progress_bar       = st.empty()
 result_placeholder = st.empty()
 
 if btn_start:
-    app_id = parse_app_id(url_input)
-    if not app_id: st.error(t['err_no_id']); st.stop()
-    if not HAS_SCRAPER: st.error(t['err_no_pkg']); st.stop()
-    if mode == t['mode_period']:
-        if dt_from > dt_to: st.error(t['err_date']); st.stop()
-        dt_from_dt = datetime(dt_from.year,dt_from.month,dt_from.day,0,0,0)
-        dt_to_dt   = datetime(dt_to.year,dt_to.month,dt_to.day,23,59,59)
+    is_count_mode = (mode == t['mode_count'])
 
-    lang_c, country_c = REGIONS[region_code]
     logs = []
     def add_log(msg):
         logs.append(msg)
         log_placeholder.markdown(f'<div class="log-box">{"<br>".join(logs[-30:])}</div>',unsafe_allow_html=True)
 
-    try:
-        info = gp_app(app_id, lang=lang_c, country=country_c)
-        add_log(t['log_app'].format(info.get('title',''),round(info.get('score',0),2),info.get('reviews',0)))
-    except Exception as e:
-        add_log(f'⚠️ {e}')
+    if mode == t['mode_period']:
+        if dt_from > dt_to: st.error(t['err_date']); st.stop()
+        dt_from_dt = datetime(dt_from.year,dt_from.month,dt_from.day,0,0,0)
+        dt_to_dt   = datetime(dt_to.year,dt_to.month,dt_to.day,23,59,59)
 
-    all_r=[]; seen=set(); token=None; batch_num=0; stop=False; empty_streak=0
-    is_count_mode = (mode == t['mode_count'])
     target = count_val if is_count_mode else 99999
     prog = progress_bar.progress(0, text=t['prog_collect'])
 
-    while not stop:
-        if is_count_mode and len(all_r)>=target: break
-        ok=False; batch=[]
-        for retry in range(1,4):
-            try:
-                batch, token = reviews(app_id,lang=lang_c,country=country_c,
-                    sort=Sort.NEWEST,count=200,continuation_token=token)
-                ok=True; break
-            except Exception as e:
-                add_log(t['retry_msg'].format(retry,str(e)[:50])); time.sleep(retry*3)
-        if not ok: add_log(t['fail_msg']); break
-        if not batch:
-            empty_streak+=1
-            if empty_streak>=3: add_log(t['log_done'].format(len(all_r))); break
-            time.sleep(2); continue
-        empty_streak=0
-        new_batch=[r for r in batch if r.get('reviewId') not in seen]
-        for r in new_batch: seen.add(r.get('reviewId'))
-        if not new_batch: break
+    # ══════════════════════════════
+    # 🍎 앱스토어 수집
+    # ══════════════════════════════
+    if is_appstore:
+        as_id = parse_appstore_id(url_input)
+        if not as_id: st.error(t['err_no_appid']); st.stop()
+        if not HAS_APP_STORE: st.error(t['err_no_appstore']); st.stop()
+
+        country_as = AS_REGIONS.get(region_code, 'us')
+        add_log(f'🍎 앱스토어 수집 시작 | ID: {as_id} | 국가: {region_code}')
+        try:
+            app_name = f'app_{as_id}'
+            scraper = AppStore(country=country_as, app_name=app_name, app_id=as_id)
+            how_many = target if is_count_mode else 5000
+            scraper.review(how=how_many)
+            raw_reviews = scraper.reviews
+            add_log(f'✅ {len(raw_reviews):,}개 수집 완료')
+        except Exception as e:
+            add_log(f'❌ 수집 실패: {e}'); st.stop()
+
+        # 기간 필터
         if not is_count_mode:
-            filtered=[]
-            for rv in new_batch:
-                at=rv.get('at')
-                if at is None: continue
-                rv_dt=at.replace(tzinfo=None) if (hasattr(at,'tzinfo') and at.tzinfo) else at
-                if rv_dt<dt_from_dt: stop=True; break
-                if rv_dt<=dt_to_dt: filtered.append(rv)
-            all_r.extend(filtered)
-            if stop: break
-        else:
-            all_r.extend(new_batch)
-        batch_num+=1
-        latest=batch[-1].get('at','')
-        if hasattr(latest,'strftime'): latest=latest.strftime('%Y-%m-%d')
-        add_log(t['log_collect'].format(len(all_r),batch_num,latest))
-        pct=min(int(len(all_r)/target*80),80) if is_count_mode else min(batch_num*3,80)
-        prog.progress(pct, text=f'{len(all_r):,}{t["unit_count"]} {t["prog_collect"]}')
-        if is_count_mode and len(all_r)>=target: break
-        if token is None:
-            if is_count_mode and len(all_r)<target:
-                time.sleep(3); empty_streak+=1
-                if empty_streak>=3: break
-            else: break
-        time.sleep(1.0)
+            filtered = []
+            for rv in raw_reviews:
+                at = rv.get('date')
+                if isinstance(at, str):
+                    try: at = datetime.strptime(at[:10], '%Y-%m-%d')
+                    except: continue
+                if at and at >= dt_from_dt and at <= dt_to_dt:
+                    filtered.append(rv)
+            raw_reviews = filtered
+            add_log(f'📅 기간 필터 후 {len(raw_reviews):,}개')
 
-    all_r = all_r[:target] if is_count_mode else all_r
-    collected = len(all_r)
-    if collected<target and is_count_mode: add_log(t['log_short'].format(target,collected))
-    else: add_log(t['log_done'].format(collected))
-    if not all_r: st.error(t['err_no_data']); st.stop()
+        if not raw_reviews: st.error(t['err_no_data']); st.stop()
+        prog.progress(80, text=t['prog_excel'])
+        add_log(t['log_excel'])
+        df = build_df_appstore(raw_reviews)
+        fname_prefix = f'appstore_{as_id}'
 
-    prog.progress(85, text=t['prog_excel'])
-    add_log(t['log_excel'])
-    df = build_df(all_r)
+    # ══════════════════════════════
+    # 🤖 구글 플레이 수집
+    # ══════════════════════════════
+    else:
+        app_id = parse_app_id(url_input)
+        if not app_id: st.error(t['err_no_id']); st.stop()
+        if not HAS_SCRAPER: st.error(t['err_no_pkg']); st.stop()
+
+        lang_c, country_c = REGIONS[region_code]
+        try:
+            info = gp_app(app_id, lang=lang_c, country=country_c)
+            add_log(t['log_app'].format(info.get('title',''),round(info.get('score',0),2),info.get('reviews',0)))
+        except Exception as e:
+            add_log(f'⚠️ {e}')
+
+        all_r=[]; seen=set(); token=None; batch_num=0; stop=False; empty_streak=0
+
+        while not stop:
+            if is_count_mode and len(all_r)>=target: break
+            ok=False; batch=[]
+            for retry in range(1,4):
+                try:
+                    batch, token = reviews(app_id,lang=lang_c,country=country_c,
+                        sort=Sort.NEWEST,count=200,continuation_token=token)
+                    ok=True; break
+                except Exception as e:
+                    add_log(t['retry_msg'].format(retry,str(e)[:50])); time.sleep(retry*3)
+            if not ok: add_log(t['fail_msg']); break
+            if not batch:
+                empty_streak+=1
+                if empty_streak>=3: add_log(t['log_done'].format(len(all_r))); break
+                time.sleep(2); continue
+            empty_streak=0
+            new_batch=[r for r in batch if r.get('reviewId') not in seen]
+            for r in new_batch: seen.add(r.get('reviewId'))
+            if not new_batch: break
+            if not is_count_mode:
+                filtered=[]
+                for rv in new_batch:
+                    at=rv.get('at')
+                    if at is None: continue
+                    rv_dt=at.replace(tzinfo=None) if (hasattr(at,'tzinfo') and at.tzinfo) else at
+                    if rv_dt<dt_from_dt: stop=True; break
+                    if rv_dt<=dt_to_dt: filtered.append(rv)
+                all_r.extend(filtered)
+                if stop: break
+            else:
+                all_r.extend(new_batch)
+            batch_num+=1
+            latest=batch[-1].get('at','')
+            if hasattr(latest,'strftime'): latest=latest.strftime('%Y-%m-%d')
+            add_log(t['log_collect'].format(len(all_r),batch_num,latest))
+            pct=min(int(len(all_r)/target*80),80) if is_count_mode else min(batch_num*3,80)
+            prog.progress(pct, text=f'{len(all_r):,}{t["unit_count"]} {t["prog_collect"]}')
+            if is_count_mode and len(all_r)>=target: break
+            if token is None:
+                if is_count_mode and len(all_r)<target:
+                    time.sleep(3); empty_streak+=1
+                    if empty_streak>=3: break
+                else: break
+            time.sleep(1.0)
+
+        all_r = all_r[:target] if is_count_mode else all_r
+        collected = len(all_r)
+        if collected<target and is_count_mode: add_log(t['log_short'].format(target,collected))
+        else: add_log(t['log_done'].format(collected))
+        if not all_r: st.error(t['err_no_data']); st.stop()
+
+        prog.progress(85, text=t['prog_excel'])
+        add_log(t['log_excel'])
+        df = build_df(all_r)
+        fname_prefix = app_id.split('.')[-1]
+
     excel_bytes = gen_excel_bytes(df, doc_code)
     prog.progress(100, text=t['prog_done'])
     add_log(t['log_finish'])
@@ -906,8 +1038,8 @@ if btn_start:
         m2.metric(t['metric_avg'],   f'{avg:.2f} ★')
         m3.metric(t['metric_pos'],   f'{pos:,}{t["unit_count"]} ({pos/len(df)*100:.1f}%)')
         m4.metric(t['metric_neg'],   f'{neg:,}{t["unit_count"]} ({neg/len(df)*100:.1f}%)')
-        fname_base=f'{app_id.split(".")[-1]}_review_{datetime.now().strftime("%Y%m%d_%H%M")}'
-        csv_bytes = gen_csv_bytes(df)
+        fname_base=f'{fname_prefix}_review_{datetime.now().strftime("%Y%m%d_%H%M")}'
+        csv_bytes = gen_csv_bytes(df, doc_code)
         dl1, dl2 = st.columns(2)
         with dl1:
             st.download_button(label=t['btn_dl'],data=excel_bytes,
