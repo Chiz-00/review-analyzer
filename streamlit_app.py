@@ -763,41 +763,54 @@ def parse_appstore_id(text):
     if re.match(r'^\d+$', text): return text
     return None
 
-def fetch_appstore_reviews(app_id, country, how_many=1000):
-    import requests, math
+def fetch_appstore_reviews(app_id, country, how_many=500):
+    import urllib.request, math
+    import xml.etree.ElementTree as ET
     all_reviews = []
-    max_page = min(math.ceil(how_many / 50), 10)  # Apple RSS는 최대 10페이지(500건)
+    max_page = min(math.ceil(how_many / 50), 10)
+    NS = {
+        'atom': 'http://www.w3.org/2005/Atom',
+        'im':   'http://itunes.apple.com/rss',
+    }
     for page in range(1, max_page + 1):
         url = (f'https://itunes.apple.com/{country}/rss/customerreviews/'
-               f'page={page}/id={app_id}/sortby=mostrecent/json')
+               f'page={page}/id={app_id}/sortby=mostrecent/xml')
         try:
-            resp = requests.get(url, timeout=15)
-            data = resp.json()
-            entries = data.get('feed', {}).get('entry', [])
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                raw = r.read()
+            root = ET.fromstring(raw)
+            entries = root.findall('atom:entry', NS)
             if not entries:
                 break
-            # 첫 번째 entry는 앱 정보 - 건너뜀
+            found = 0
             for e in entries:
-                if 'im:rating' not in e:
+                rating_el = e.find('im:rating', NS)
+                if rating_el is None:
                     continue
-                author = e.get('author', {}).get('name', {}).get('label', '')
-                rating = int(e.get('im:rating', {}).get('label', 0))
-                content = e.get('content', {}).get('label', '')
-                title   = e.get('title', {}).get('label', '')
-                updated = e.get('updated', {}).get('label', '')[:10]
-                version = e.get('im:version', {}).get('label', '')
-                rev_id  = e.get('id', {}).get('label', '')
+                author  = e.findtext('atom:author/atom:name', '', NS)
+                rating  = int(rating_el.text or 0)
+                content_el = e.find('atom:content', NS)
+                content = content_el.text if content_el is not None else ''
+                title_el = e.find('atom:title', NS)
+                title   = title_el.text if title_el is not None else ''
+                updated = e.findtext('atom:updated', '', NS)[:10]
+                version = e.findtext('im:version', '', NS)
+                rev_id  = e.findtext('atom:id', '', NS)
                 all_reviews.append({
                     'id': rev_id, 'userName': author,
                     'rating': rating,
                     'review': f'{title} {content}'.strip(),
                     'date': updated, 'version': version,
                 })
-            if len(entries) < 2:  # 앱 정보만 있고 리뷰 없으면 종료
+                found += 1
+            if found == 0:
+                break
+            if len(all_reviews) >= how_many:
                 break
         except Exception:
             break
-    return all_reviews
+    return all_reviews[:how_many]
 
 def build_df_appstore(raw):
     '''앱스토어 리뷰 → DataFrame (구글 플레이와 동일 컬럼 구조)'''
