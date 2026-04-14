@@ -53,6 +53,15 @@ AS_REGIONS = {
     'GB': 'gb',
 }
 
+# 스팀 언어 코드
+STEAM_LANGS = {
+    'KR': 'koreana',
+    'JP': 'japanese',
+    'US': 'english',
+    'TW': 'tchinese',
+    'GB': 'english',
+}
+
 I18N = {
     'KR': {
         'title':'🎮 구글 플레이 리뷰 분석기',
@@ -71,6 +80,16 @@ I18N = {
         'platform_label':'📱 플랫폼',
         'platform_gp':'🤖 구글 플레이',
         'platform_as':'🍎 앱스토어 (iOS)',
+        'platform_st':'🎮 스팀 (Steam)',
+        'steam_url_ph':'https://store.steampowered.com/app/1234567/게임명  또는  앱 ID(숫자)',
+        'err_no_steamid':'올바른 스팀 URL 또는 앱 ID(숫자)를 입력해주세요.',
+        'steam_lang_label':'🌐 리뷰 언어',
+        'steam_notice':'🎮 스팀 모드 — Steam 공식 API 사용 (무료, 키 불필요)\n\n💡 이론상 무제한 수집 가능 (배치당 100건)',
+        'metric_rec':'👍 추천',
+        'metric_norec':'👎 비추천',
+        'steam_rec':'👍 추천','steam_norec':'👎 비추천',
+        'steam_playtime':'플레이 시간(분)',
+        'c_playtime':'플레이시간(분)',
         'region_label':'🌏 수집 국가',
         'appstore_url_ph':'https://apps.apple.com/kr/app/앱이름/id123456789  또는  앱 ID(숫자)',
         'err_no_appstore':'app-store-scraper가 설치되지 않았습니다.',
@@ -180,6 +199,16 @@ I18N = {
         'platform_label':'📱 プラットフォーム',
         'platform_gp':'🤖 Google Play',
         'platform_as':'🍎 App Store (iOS)',
+        'platform_st':'🎮 Steam',
+        'steam_url_ph':'https://store.steampowered.com/app/1234567/ゲーム名  または  アプリID(数字)',
+        'err_no_steamid':'正しいSteam URLまたはアプリID(数字)を入力してください。',
+        'steam_lang_label':'🌐 レビュー言語',
+        'steam_notice':'🎮 Steamモード — Steam公式API使用 (無料、キー不要)\n\n💡 理論上無制限収集可能 (バッチあたり100件)',
+        'metric_rec':'👍 推薦',
+        'metric_norec':'👎 非推薦',
+        'steam_rec':'👍 推薦','steam_norec':'👎 非推薦',
+        'steam_playtime':'プレイ時間(分)',
+        'c_playtime':'プレイ時間(分)',
         'region_label':'🌏 収集国',
         'appstore_url_ph':'https://apps.apple.com/jp/app/アプリ名/id123456789  または  アプリID(数字)',
         'err_no_appstore':'app-store-scraperがインストールされていません。',
@@ -690,7 +719,11 @@ def mk_opinion(ws, df, t, doc_lang):
         _mw(ws,i,1,i,4,cat,bold=True,sz=10,fg=C_WHITE,bg=color,h='center',v='center')
         _mw(ws,i,5,i,12,ev,bold=True,sz=11,fg=color,bg=bg,h='left',v='center')
     ws.row_dimensions[hrow+len(categories)+1].height=14
-    kw_rows,one_line,ns,ps=analyze_kw(df,t)
+    # 스팀이면 스팀 전용 분석 사용
+    if '추천여부' in df.columns:
+        kw_rows,one_line,ns,ps=analyze_kw_steam(df,t)
+    else:
+        kw_rows,one_line,ns,ps=analyze_kw(df,t)
     sum_row=hrow+len(categories)+2
     ws.merge_cells(start_row=sum_row,start_column=1,end_row=sum_row,end_column=12)
     c=ws.cell(row=sum_row,column=1,value=f'{t["sum_pfx"]}{one_line}')
@@ -881,16 +914,244 @@ def mk_criteria(ws, t):
 
     _cw(ws,{'A':20,'B':50,'C':15,'D':15,'E':15,'F':15})
 
-def gen_excel_bytes(df, doc_lang):
+def mk_dash_steam(ws, df, t):
+    '''스팀 전용 대시보드 시트'''
+    ws.sheet_view.showGridLines=False
+    ws.merge_cells('A1:P3'); c=ws['A1']
+    c.value='🎮  Steam 리뷰 분석 대시보드' if t is I18N.get('KR',t) else '🎮  Steam レビュー分析ダッシュボード'
+    c.font=Font(bold=True,size=20,color=C_WHITE,name='Arial')
+    c.fill=_fill('1B2838'); c.alignment=_al()
+    for r in [1,2,3]: ws.row_dimensions[r].height=44
+    ws.merge_cells('A4:P4'); s=ws['A4']
+    s.value=t['dash_sub_fmt'].format(df['작성일'].min(),df['작성일'].max(),len(df),datetime.now().strftime('%Y-%m-%d %H:%M'))
+    s.font=Font(size=9,color='BBBBBB',name='Arial'); s.fill=_fill(C_MID); s.alignment=_al('left')
+    ws.row_dimensions[4].height=18; ws.row_dimensions[5].height=10
+    total=len(df)
+    rec=(df['평점']==5).sum(); norec=(df['평점']==1).sum()
+    avg_pt=df['플레이시간'].mean() if '플레이시간' in df.columns else 0
+    rep=(df['개발사답변'].notna()&(df['개발사답변']!='')).sum()
+    rec_rate=rec/total*100 if total else 0
+    kpis=[
+        ('👍 추천률', f'{rec_rate:.1f}%', '1B6A3C', f'{rec:,}건'),
+        ('📝 총 리뷰', f'{total:,}', C_DARK, ''),
+        ('👍 추천', f'{rec:,}', C_GREEN, f'{rec_rate:.1f}%'),
+        ('👎 비추천', f'{norec:,}', C_RED, f'{norec/total*100:.1f}%'),
+        ('⏱️ 평균플레이', f'{avg_pt/60:.0f}h', C_BLUE, f'{avg_pt:.0f}분'),
+        ('💬 개발사답변', f'{rep:,}', C_ACCENT, f'{rep/total*100:.1f}%'),
+    ]
+    for (c1,c2),(lbl,val,col,sub) in zip(zip([1,3,5,8,11,14],[2,4,7,10,13,16]),kpis):
+        for r in [6,7,8,9]: ws.merge_cells(start_row=r,start_column=c1,end_row=r,end_column=c2)
+        lc=ws.cell(row=6,column=c1,value=lbl); lc.font=Font(bold=True,size=9,color=C_WHITE,name='Arial')
+        lc.fill=_fill(col); lc.alignment=_al()
+        vc=ws.cell(row=7,column=c1,value=val); vc.font=Font(bold=True,size=20,color=C_WHITE,name='Arial')
+        vc.fill=_fill(col); vc.alignment=_al()
+        sc=ws.cell(row=8,column=c1,value=sub); sc.font=Font(size=9,color=C_WHITE,name='Arial')
+        sc.fill=_fill(col); sc.alignment=_al()
+        ws.cell(row=9,column=c1).fill=_fill(col)
+        for r,h in [(6,18),(7,38),(8,16),(9,6)]: ws.row_dimensions[r].height=h
+    # 차트용 숨김 데이터
+    mo=df.groupby('작성월').agg(cnt=('평점','count'),rec=('평점',lambda x:(x==5).sum())).reset_index()
+    _hidden(ws,1,19,'추천/비추천'); _hidden(ws,1,20,'건수')
+    _hidden(ws,2,19,'👍 추천'); _hidden(ws,2,20,int(rec))
+    _hidden(ws,3,19,'👎 비추천'); _hidden(ws,3,20,int(norec))
+    _hidden(ws,5,19,'월'); _hidden(ws,5,20,'리뷰수'); _hidden(ws,5,21,'추천수')
+    for i,r in enumerate(mo.itertuples(),6):
+        _hidden(ws,i,19,r.작성월); _hidden(ws,i,20,r.cnt); _hidden(ws,i,21,int(r.rec))
+    _sec(ws,11,1,8,'📊 추천/비추천 분포')
+    pie=PieChart(); pie.style=10; pie.title=None; pie.width=15; pie.height=12
+    pie.add_data(Reference(ws,min_col=20,min_row=1,max_row=3),titles_from_data=True)
+    pie.set_categories(Reference(ws,min_col=19,min_row=2,max_row=3))
+    for idx,c in enumerate(['27AE60','C0392B']):
+        pt=DataPoint(idx=idx); pt.graphicalProperties.solidFill=c; pie.series[0].dPt.append(pt)
+    ws.add_chart(pie,'A12')
+    n=len(mo); _sec(ws,29,1,16,'📈 월별 리뷰 수 & 추천 추이')
+    bar2=BarChart(); bar2.type='col'; bar2.style=10; bar2.title=None
+    bar2.width=32; bar2.height=13; bar2.y_axis.title='리뷰수'; bar2.y_axis.axId=100
+    d_bar=Reference(ws,min_col=20,min_row=5,max_row=5+n)
+    bar2.add_data(d_bar,titles_from_data=True)
+    bar2.set_categories(Reference(ws,min_col=19,min_row=6,max_row=5+n))
+    bar2.series[0].graphicalProperties.solidFill='1B6A3C'
+    line2=LineChart(); line2.style=10; line2.title=None
+    line2.y_axis.title='추천수'; line2.y_axis.axId=200
+    line2.y_axis.crosses='max'; line2.y_axis.crossAx=100
+    d_line=Reference(ws,min_col=21,min_row=5,max_row=5+n)
+    line2.add_data(d_line,titles_from_data=True)
+    line2.set_categories(Reference(ws,min_col=19,min_row=6,max_row=5+n))
+    line2.series[0].graphicalProperties.line.solidFill=C_GOLD
+    line2.series[0].graphicalProperties.line.width=28000
+    bar2+=line2; ws.add_chart(bar2,'A30')
+    ws.row_dimensions[46].height=10; _sec(ws,47,1,16,'👍 좋아요 Top 10 리뷰')
+    _hr(ws,48,['사용자','추천','플레이시간','내용','날짜'],bg=C_MID)
+    ws.merge_cells('D48:O48')
+    _w(ws,48,16,'날짜',bold=True,sz=10,fg=C_WHITE,bg=C_MID,h='center')
+    for i,(_,r) in enumerate(df.nlargest(10,'좋아요').iterrows(),49):
+        rec_flag = r['평점']==5
+        bg=C_LGREEN if rec_flag else C_LRED; ws.row_dimensions[i].height=36
+        _w(ws,i,1,r['사용자'],sz=9,bg=bg,h='center')
+        sc_c=C_GREEN if rec_flag else C_RED
+        _w(ws,i,2,'👍' if rec_flag else '👎',bold=True,sz=14,fg=sc_c,bg=bg,h='center')
+        pt_h = r.get('플레이시간',0)//60 if '플레이시간' in r.index else 0
+        _w(ws,i,3,f'{pt_h}h',sz=9,bg=bg,h='center')
+        ws.merge_cells(start_row=i,start_column=4,end_row=i,end_column=15)
+        _w(ws,i,4,r['내용'][:120],sz=9,bg=bg,h='left',wrap=True)
+        _w(ws,i,16,r['작성일'],sz=9,bg=bg,h='center')
+    _cw(ws,{c:w for c,w in zip('ABCDEFGHIJKLMNOP',[14,6,10,10,8,8,8,8,8,8,8,8,8,8,8,12])})
+
+def mk_raw_steam(ws, df, t):
+    ws.sheet_view.showGridLines=False; ws.freeze_panes='A2'
+    cols=['리뷰ID','사용자','추천여부','내용','작성일','작성월','좋아요','플레이시간(분)','개발사답변','답변일']
+    dk=['리뷰ID','사용자','추천여부','내용','작성일','작성월','좋아요','플레이시간','개발사답변','답변일']
+    _hr(ws,1,cols,height=20)
+    for i,row in enumerate(df[dk].itertuples(index=False),2):
+        is_rec = str(row[2]).startswith('👍')
+        bg=C_LGREEN if is_rec else C_LRED
+        ws.row_dimensions[i].height=14
+        for j,val in enumerate(row,1):
+            c=ws.cell(row=i,column=j,value=val)
+            c.fill=_fill(bg); c.border=_bd(); c.font=Font(size=9,name='Arial')
+            c.alignment=_al('left','center',wrap=(j in [4,9]))
+            if j==3:
+                cc=C_GREEN if is_rec else C_RED
+                c.font=Font(bold=True,size=10,color=cc,name='Arial'); c.alignment=_al()
+    ws.auto_filter.ref=f'A1:{get_column_letter(len(cols))}1'
+    _cw(ws,{'A':18,'B':12,'C':10,'D':50,'E':12,'F':10,'G':8,'H':12,'I':35,'J':12})
+
+def mk_stats_steam(ws, df, t):
+    ws.sheet_view.showGridLines=False
+    ws.merge_cells('A1:H1'); c=ws['A1']
+    c.value='📈 스팀 상세 통계' if t is I18N.get('KR',t) else '📈 Steam詳細統計'
+    c.font=Font(bold=True,size=15,color=C_WHITE,name='Arial')
+    c.fill=_fill(C_DARK); c.alignment=_al(); ws.row_dimensions[1].height=32
+    ws.row_dimensions[2].height=10
+    _sec(ws,3,1,8,'👍👎 추천/비추천 통계')
+    _hr(ws,4,['구분','리뷰수','비율(%)','평균플레이(h)','평균좋아요','답변수','답변율(%)',''],height=20)
+    total=len(df)
+    for i,(label,mask) in enumerate([('👍 추천',df['평점']==5),('👎 비추천',df['평점']==1)],5):
+        sub=df[mask]; cnt=len(sub)
+        bg=C_LGREEN if i==5 else C_LRED; cc=C_GREEN if i==5 else C_RED
+        rc=(sub['개발사답변'].notna()&(sub['개발사답변']!='')).sum()
+        avg_pt=sub['플레이시간'].mean()/60 if cnt and '플레이시간' in sub.columns else 0
+        vals=[label,cnt,round(cnt/total*100,1),round(avg_pt,1),
+              round(sub['좋아요'].mean(),1) if cnt else 0,
+              int(rc),round(rc/cnt*100,1) if cnt else 0,'●']
+        ws.row_dimensions[i].height=22
+        for j,v in enumerate(vals,1):
+            c=ws.cell(row=i,column=j,value=v); c.fill=_fill(bg); c.border=_bd(); c.alignment=_al()
+            c.font=Font(bold=(j in [1,8]),size=10,color=cc if j in [1,8] else '000000',name='Arial')
+    ws.row_dimensions[7].height=12; _sec(ws,8,1,8,'📅 월별 추이')
+    _hr(ws,9,['월','리뷰수','추천수','비추천수','추천률(%)','','',''],height=20)
+    for i,(mo,g) in enumerate(df.groupby('작성월'),10):
+        bg=C_LIGHT if i%2==0 else C_WHITE; ws.row_dimensions[i].height=20
+        rec=int((g['평점']==5).sum()); norec=int((g['평점']==1).sum())
+        for j,v in enumerate([mo,len(g),rec,norec,round(rec/len(g)*100,1) if len(g) else 0],1):
+            c=ws.cell(row=i,column=j,value=v); c.fill=_fill(bg); c.border=_bd()
+            c.font=Font(size=10,name='Arial'); c.alignment=_al()
+    _cw(ws,{'A':12,'B':10,'C':10,'D':10,'E':12,'F':8,'G':8,'H':8})
+
+def mk_criteria_steam(ws, t):
+    ws.sheet_view.showGridLines=False
+    is_kr = (t is I18N.get('KR', t))
+    title_txt = '📐 스팀 분석 기준 시트' if is_kr else '📐 Steam分析基準シート'
+    ws.merge_cells('A1:F1'); c=ws['A1']; c.value=title_txt
+    c.font=Font(bold=True,size=15,color=C_WHITE,name='Arial')
+    c.fill=_fill('1B2838'); c.alignment=_al(); ws.row_dimensions[1].height=32
+    ws.row_dimensions[2].height=10
+    _sec(ws,3,1,6,'⭐ 스팀 감성 분류 기준' if is_kr else '⭐ Steam感情分類基準')
+    _hr(ws,4,['구분','기준','설명','','',''] if is_kr else ['区分','基準','説明','','',''],bg=C_MID)
+    rows_kr = [
+        ('분류 방식','추천여부 기반','스팀은 추천(👍)/비추천(👎)이 명확 → 그대로 버킷 분류'),
+        ('추천(👍)','voted_up = True','긍정 버킷 → 긍정 키워드 분석 대상'),
+        ('비추천(👎)','voted_up = False','부정 버킷 → 부정 키워드 분석 대상'),
+        ('역접어 처리','한데/지만/했는데 등','역접어 뒤 내용을 최종 감정으로 판단'),
+        ('부정어 조합','없어요/안/못/전혀 등','부정KW+부정어 = 긍정으로 재분류'),
+        ('플레이시간','author.playtime_forever','Steam API 제공 — 분단위, 60으로 나누면 시간'),
+        ('구글플레이 차이','추천/비추천 2단계','구글플레이는 1~5점, 스팀은 추천/비추천만'),
+    ]
+    rows_jp = [
+        ('分類方式','推薦可否ベース','Steamは推薦(👍)/非推薦(👎)が明確 → そのままバケット分類'),
+        ('推薦(👍)','voted_up = True','肯定バケット → 肯定KW分析対象'),
+        ('非推薦(👎)','voted_up = False','否定バケット → 否定KW分析対象'),
+        ('逆接語処理','けど/が/でも等','逆接語以降の内容を最終感情として判断'),
+        ('否定語組合せ','ない/ず/ません等','否定KW+否定語 = 肯定に再分類'),
+        ('プレイ時間','author.playtime_forever','Steam API提供 — 分単位'),
+        ('GP比較','推薦/非推薦2段階','Google Playは1~5点、Steamは推薦/非推薦のみ'),
+    ]
+    score_rows = rows_kr if is_kr else rows_jp
+    for i,(a,b,c_txt) in enumerate(score_rows, 5):
+        bg = C_LIGHT if i%2==0 else C_WHITE
+        ws.row_dimensions[i].height=22
+        _w(ws,i,1,a,bold=True,sz=10,bg=bg,h='center')
+        _w(ws,i,2,b,sz=10,bg=bg,h='center')
+        ws.merge_cells(start_row=i,start_column=3,end_row=i,end_column=6)
+        _w(ws,i,3,c_txt,sz=10,bg=bg,h='left',wrap=True)
+    row = 5 + len(score_rows) + 2
+    _sec(ws,row,1,6,'🔴 부정 키워드' if is_kr else '🔴 否定キーワード',bg=C_RED); row+=1
+    _hr(ws,row,['카테고리','키워드','','','',''] if is_kr else ['カテゴリ','キーワード','','','',''],bg=C_MID); row+=1
+    neg_kw_items = [
+        ('버그·오류·크래시','버그, 오류, 에러, 크래시, 튕기, 강제종료'),
+        ('최적화·성능','렉, 버벅, 최적화, 발열, 프레임, 끊김, 무거'),
+        ('핵·치트','핵, 치터, 치트, 어뷰징, 핵유저'),
+        ('밸런스·패치','밸런스, 너프, 사기, 패치, 운영, 방치'),
+        ('환불·과금','환불, 과금, 비싸, 사기, 돈'),
+        ('스토리·콘텐츠','스토리, 콘텐츠, 반복, 지루, 노잼, 부족'),
+    ] if is_kr else [
+        ('バグ・エラー','バグ, エラー, クラッシュ, 落ちる'),
+        ('最適化','重い, カクカク, 最適化, 発熱'),
+        ('チート','チート, ハック, 不正'),
+        ('バランス','バランス, ナーフ, 運営, 放置'),
+        ('返金','返金, 課金, 高い'),
+        ('ストーリー','ストーリー, コンテンツ, つまらない'),
+    ]
+    for a,b in neg_kw_items:
+        bg=C_LRED if row%2==0 else C_WHITE; ws.row_dimensions[row].height=20
+        _w(ws,row,1,a,bold=True,sz=10,fg=C_RED,bg=bg,h='center')
+        ws.merge_cells(start_row=row,start_column=2,end_row=row,end_column=6)
+        _w(ws,row,2,b,sz=9,bg=bg,h='left'); row+=1
+    row+=1
+    _sec(ws,row,1,6,'🟢 긍정 키워드' if is_kr else '🟢 肯定キーワード',bg=C_GREEN); row+=1
+    _hr(ws,row,['카테고리','키워드','','','',''] if is_kr else ['カテゴリ','キーワード','','','',''],bg=C_MID); row+=1
+    pos_kw_items = [
+        ('그래픽·비주얼','그래픽, 비주얼, 아트, 예쁘, 퀄리티'),
+        ('게임성·전투','전투, 전략, 재밌, 꿀잼, 갓겜, 중독'),
+        ('스토리·세계관','스토리, 세계관, 몰입, 감동, 흥미'),
+        ('멀티·커뮤니티','친구, 멀티, 파티, 같이, 함께'),
+        ('가성비·업데이트','무료, 업데이트, 컨텐츠, 보상, 이벤트'),
+    ] if is_kr else [
+        ('グラフィック','グラフィック, アート, 綺麗, クオリティ'),
+        ('ゲーム性','戦闘, 戦略, 面白い, 神ゲー, 爽快'),
+        ('ストーリー','ストーリー, 世界観, 没入, 感動'),
+        ('マルチ','友達, マルチ, パーティ, 一緒'),
+        ('コスパ','無料, アップデート, 報酬, イベント'),
+    ]
+    for a,b in pos_kw_items:
+        bg=C_LGREEN if row%2==0 else C_WHITE; ws.row_dimensions[row].height=20
+        _w(ws,row,1,a,bold=True,sz=10,fg=C_GREEN,bg=bg,h='center')
+        ws.merge_cells(start_row=row,start_column=2,end_row=row,end_column=6)
+        _w(ws,row,2,b,sz=9,bg=bg,h='left'); row+=1
+    _cw(ws,{'A':22,'B':45,'C':12,'D':12,'E':12,'F':12})
+
+def gen_excel_bytes(df, doc_lang, is_steam=False):
     t=I18N[doc_lang]; wb=Workbook()
-    ws1=wb.active; ws1.title=t['sh_dash']; mk_dash(ws1,df,t)
-    ws2=wb.create_sheet(t['sh_op']);   mk_opinion(ws2,df,t,doc_lang)
-    ws3=wb.create_sheet(t['sh_raw']);  mk_raw(ws3,df,t)
-    ws4=wb.create_sheet(t['sh_stat']); mk_stats(ws4,df,t)
-    sh_crit = '📐 분석기준' if doc_lang=='KR' else '📐 分析基準'
-    ws5=wb.create_sheet(sh_crit); mk_criteria(ws5,t)
-    ws1.sheet_properties.tabColor=C_ACCENT; ws2.sheet_properties.tabColor=C_GOLD
-    ws3.sheet_properties.tabColor=C_GREEN;  ws4.sheet_properties.tabColor=C_BLUE
+    if is_steam:
+        ws1=wb.active; ws1.title='📊 대시보드' if doc_lang=='KR' else '📊 ダッシュボード'
+        mk_dash_steam(ws1,df,t)
+        ws2=wb.create_sheet(t['sh_op']); mk_opinion(ws2,df,t,doc_lang)
+        ws3=wb.create_sheet('📋 전체 리뷰' if doc_lang=='KR' else '📋 全レビュー')
+        mk_raw_steam(ws3,df,t)
+        ws4=wb.create_sheet(t['sh_stat']); mk_stats_steam(ws4,df,t)
+        sh_crit = '📐 분석기준(Steam)' if doc_lang=='KR' else '📐 分析基準(Steam)'
+        ws5=wb.create_sheet(sh_crit); mk_criteria_steam(ws5,t)
+    else:
+        ws1=wb.active; ws1.title=t['sh_dash']; mk_dash(ws1,df,t)
+        ws2=wb.create_sheet(t['sh_op']);   mk_opinion(ws2,df,t,doc_lang)
+        ws3=wb.create_sheet(t['sh_raw']);  mk_raw(ws3,df,t)
+        ws4=wb.create_sheet(t['sh_stat']); mk_stats(ws4,df,t)
+        sh_crit = '📐 분석기준' if doc_lang=='KR' else '📐 分析基準'
+        ws5=wb.create_sheet(sh_crit); mk_criteria(ws5,t)
+    ws1.sheet_properties.tabColor='1B2838' if is_steam else C_ACCENT
+    ws2.sheet_properties.tabColor=C_GOLD
+    ws3.sheet_properties.tabColor=C_GREEN
+    ws4.sheet_properties.tabColor=C_BLUE
     ws5.sheet_properties.tabColor='9B59B6'
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.getvalue()
@@ -913,6 +1174,218 @@ def parse_app_id(text):
     if m: return m.group(1)
     if re.match(r'^[a-zA-Z][a-zA-Z0-9._]+$',text): return text
     return None
+
+# ══════════════════════════════════════════
+# 스팀 수집 함수
+# ══════════════════════════════════════════
+def parse_steam_id(text):
+    text = text.strip()
+    import re as _re
+    m = _re.search(r'store[.]steampowered[.]com/app/(\d+)', text)
+    if m: return m.group(1)
+    if _re.match(r'^\d+$', text): return text
+    return None
+
+def fetch_steam_reviews(app_id, language='koreana', how_many=1000, mode='count',
+                        dt_from=None, dt_to=None):
+    import urllib.request, json
+    all_reviews = []; cursor = '*'; batch = 0
+    while True:
+        url = (f'https://store.steampowered.com/appreviews/{app_id}'
+               f'?json=1&language={language}&review_type=all'
+               f'&purchase_type=all&num_per_page=100&cursor={urllib.parse.quote(cursor)}'
+               f'&filter=recent')
+        try:
+            import urllib.parse
+            url = (f'https://store.steampowered.com/appreviews/{app_id}'
+                   f'?json=1&language={language}&review_type=all'
+                   f'&purchase_type=all&num_per_page=100'
+                   f'&cursor={urllib.parse.quote(str(cursor))}&filter=recent')
+            req = urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+        except Exception as e:
+            break
+        if data.get('success') != 1: break
+        reviews = data.get('reviews', [])
+        if not reviews: break
+        for rv in reviews:
+            ts = rv.get('timestamp_created', 0)
+            at = datetime.fromtimestamp(ts) if ts else None
+            if mode == 'period' and at:
+                if at < dt_from: return all_reviews
+                if at > dt_to: continue
+            all_reviews.append({
+                'reviewId'    : rv.get('recommendationid',''),
+                'userName'    : rv.get('author',{}).get('steamid',''),
+                'recommended' : rv.get('voted_up', False),
+                'score'       : 1 if rv.get('voted_up') else 0,
+                'content'     : rv.get('review','').replace('\n',' '),
+                'at'          : at,
+                'playtime'    : rv.get('author',{}).get('playtime_forever', 0),
+                'thumbsUpCount': rv.get('votes_up', 0),
+                'replyContent': rv.get('developer_response','') or '',
+                'repliedAt'   : None,
+                'reviewCreatedVersion': '',
+            })
+        batch += 1
+        new_cursor = data.get('cursor','')
+        if not new_cursor or new_cursor == cursor: break
+        cursor = new_cursor
+        if mode == 'count' and len(all_reviews) >= how_many: break
+    return all_reviews[:how_many] if mode == 'count' else all_reviews
+
+def build_df_steam(raw):
+    rows = []
+    for r in raw:
+        at = r.get('at')
+        rows.append({
+            '리뷰ID'    : str(r.get('reviewId','')),
+            '사용자'    : r.get('userName',''),
+            '평점'      : 5 if r.get('recommended') else 1,
+            '추천여부'  : '👍 추천' if r.get('recommended') else '👎 비추천',
+            '내용'      : r.get('content','').replace('\n',' '),
+            '작성일'    : at.strftime('%Y-%m-%d') if at else '',
+            '작성월'    : at.strftime('%Y-%m') if at else '',
+            '좋아요'    : r.get('thumbsUpCount', 0),
+            '플레이시간': r.get('playtime', 0),
+            '개발사답변': r.get('replyContent',''),
+            '답변일'    : '',
+            '앱버전'    : '',
+        })
+    return pd.DataFrame(rows).sort_values('작성일', ascending=False).reset_index(drop=True)
+
+def analyze_kw_steam(df, t):
+    '''스팀 전용 여론 분석 — 추천여부 기반 버킷 분류'''
+    # 스팀은 추천/비추천이 명확해서 그걸 기준으로 버킷 분류
+    neg_tx = df[df['평점']==1]['내용'].dropna()
+    pos_tx = df[df['평점']==5]['내용'].dropna()
+    neg_total = len(neg_tx); pos_total = len(pos_tx)
+
+    NEG_EXPR = ['버그','최악','짜증','불편','렉','망겜','서운','아쉽','실망','후회',
+                '제발','비싸','확률','과금','런함','접음','쓰레기','사기','기만',
+                '방치','운영','환불','도박','인플레','믿어본다','한번만','낙담',
+                '최적화','발열','튕기','오류','에러','끊김','크래시','프레임',
+                '핵','치터','치트','어뷰징','밸런스','너프','핵유저']
+    POS_EXPR = ['재밌','좋아','최고','갓겜','꿀잼','대박','추천','만족','감동',
+                '몰입','좋음','좋다','재미있','퀄리티','굿','굳','존잼','강추',
+                '중독','힐링','명작','인생겜','레전드','완벽','훌륭']
+    REVERSAL_KW = ['한데','지만','는데','근데','그러나','하지만','그런데',
+                   '이지만','이긴','긴하','했는데','했지만']
+    NEGATION_WORDS = ['없어요','없음','없다','없어','안 ','안됨','안돼',
+                      '못 ','전혀','하나도','거의']
+
+    def has_negation_near(text, keyword, window=8):
+        idx = text.find(keyword)
+        if idx == -1: return False
+        surrounding = text[max(0,idx-window):idx+len(keyword)+window]
+        return any(nw in surrounding for nw in NEGATION_WORDS)
+
+    def sentiment_score(text):
+        t_lower = text.lower(); score = 0
+        reversal_pos = -1
+        for rw in REVERSAL_KW:
+            idx = t_lower.find(rw)
+            if idx != -1: reversal_pos = idx; break
+        if reversal_pos > 0:
+            before = t_lower[:reversal_pos]; after = t_lower[reversal_pos:]
+            for p in POS_EXPR:
+                if p in before: score += 1
+            for n in NEG_EXPR:
+                if n in before:
+                    score += 1 if has_negation_near(before,n) else -1
+            for p in POS_EXPR:
+                if p in after: score += 2
+            for n in NEG_EXPR:
+                if n in after:
+                    score += 2 if has_negation_near(after,n) else -2
+        else:
+            for p in POS_EXPR:
+                if p in t_lower: score += 2
+            for n in NEG_EXPR:
+                if n in t_lower:
+                    score += 2 if has_negation_near(t_lower,n) else -2
+        return score
+
+    def cnt_kw(texts, kw_dict, used, is_neg):
+        res = {}
+        for lbl, kws in kw_dict.items():
+            c = 0; ex = []
+            for tx in texts:
+                s = str(tx).lower()
+                if any(k in s for k in kws):
+                    c += 1
+                    raw = str(tx).strip()
+                    sc = sentiment_score(raw)
+                    if len(ex) < 3 and len(raw) >= 10 and raw not in used:
+                        if is_neg and sc <= 0:
+                            ex.append(raw[:85]); used.add(raw)
+                        elif not is_neg and sc >= 0:
+                            ex.append(raw[:85]); used.add(raw)
+            res[lbl] = {'count': c, 'examples': ex}
+        return res
+
+    steam_neg_kw = {
+        '버그·오류·크래시': ['버그','오류','에러','크래시','튕기','강제종료'],
+        '최적화·성능':      ['렉','버벅','최적화','발열','프레임','끊김','무거'],
+        '핵·치트':          ['핵','치터','치트','어뷰징','핵유저'],
+        '밸런스·패치':      ['밸런스','너프','사기','패치','운영','방치'],
+        '환불·과금':        ['환불','과금','비싸','사기','돈'],
+        '스토리·콘텐츠':    ['스토리','콘텐츠','반복','지루','노잼','부족'],
+    } if t is I18N.get('KR', t) else {
+        'バグ・エラー':     ['バグ','エラー','クラッシュ','落ちる'],
+        '最適化・性能':     ['重い','カクカク','最適化','発熱','フレーム'],
+        'チート':           ['チート','ハック','不正'],
+        'バランス・パッチ': ['バランス','ナーフ','運営','放置'],
+        '返金・課金':       ['返金','課金','高い'],
+        'ストーリー':       ['ストーリー','コンテンツ','つまらない'],
+    }
+    steam_pos_kw = {
+        '그래픽·비주얼':    ['그래픽','비주얼','아트','예쁘','퀄리티'],
+        '게임성·전투':      ['전투','전략','재밌','꿀잼','갓겜','중독'],
+        '스토리·세계관':    ['스토리','세계관','몰입','감동','흥미'],
+        '멀티·커뮤니티':    ['친구','멀티','파티','같이','함께'],
+        '가성비·업데이트':  ['무료','업데이트','컨텐츠','보상','이벤트'],
+    } if t is I18N.get('KR', t) else {
+        'グラフィック':     ['グラフィック','アート','綺麗','クオリティ'],
+        'ゲーム性':         ['戦闘','戦略','面白い','神ゲー','爽快'],
+        'ストーリー':       ['ストーリー','世界観','没入','感動'],
+        'マルチ':           ['友達','マルチ','パーティ','一緒'],
+        'コスパ':           ['無料','アップデート','報酬','イベント'],
+    }
+
+    used_neg = set(); used_pos = set()
+    nr = cnt_kw(neg_tx, steam_neg_kw, used_neg, True)
+    pr = cnt_kw(pos_tx, steam_pos_kw, used_pos, False)
+    ns = sorted(nr.items(), key=lambda x:x[1]['count'], reverse=True)
+    ps = sorted(pr.items(), key=lambda x:x[1]['count'], reverse=True)
+
+    def lv(c, is_neg):
+        if is_neg: return t['lv_very_many'] if c>=30 else (t['lv_many'] if c>=15 else (t['lv_normal'] if c>=5 else t['lv_few']))
+        else:      return t['lv_very_many'] if c>=40 else (t['lv_many'] if c>=20 else (t['lv_normal'] if c>=5 else t['lv_few']))
+
+    rows = []
+    for i,(lbl,d) in enumerate(ns,1):
+        if d['count']==0: continue
+        ex='  /  '.join([f'"{e}"' for e in d['examples']]) or '-'
+        rows.append({'rank':f'🔴 {i}{t["rank_suffix"]}','kw':lbl,'sent':'neg','cnt':d['count'],
+                     'cnt_pct':f'{lv(d["count"],True)} ({d["count"]:,}{t["unit_reviews"]})',
+                     'sum':t['kw_neg_sum'].format(neg_total,d['count'],lbl),'ex':ex})
+    for i,(lbl,d) in enumerate(ps,1):
+        if d['count']==0: continue
+        ex='  /  '.join([f'"{e}"' for e in d['examples']]) or '-'
+        rows.append({'rank':f'🟢 {i}{t["rank_suffix"]}','kw':lbl,'sent':'pos','cnt':d['count'],
+                     'cnt_pct':f'{lv(d["count"],False)} ({d["count"]:,}{t["unit_reviews"]})',
+                     'sum':t['kw_pos_sum'].format(pos_total,d['count'],lbl),'ex':ex})
+
+    total=len(df); rec=(df['평점']==5).sum(); norec=(df['평점']==1).sum()
+    top_neg=ns[0][0] if ns else '-'; top_pos=ps[0][0] if ps else '-'
+    pos_r=rec/total if total else 0; neg_r=norec/total if total else 0
+    if pos_r>0.6:   mood=t['mood_pos'].format(pos_r*100)
+    elif pos_r>0.4: mood=t['mood_mix'].format(pos_r*100, neg_r*100)
+    else:           mood=t['mood_neg'].format(neg_r*100)
+    one=t['one_line_fmt'].format(top_pos, top_neg, pos_r*5, mood)
+    return rows, one, ns, ps
 
 def parse_appstore_id(text):
     '''앱스토어 앱 ID 추출 (숫자)'''
@@ -1044,7 +1517,11 @@ with st.sidebar:
     st.markdown('---')
     PATCH_NOTES = {
         'KR': '''
-**v2.7** *(현재 버전)*
+**v2.8** *(현재 버전)*
+- 🎮 스팀(Steam) 리뷰 수집 지원 추가
+- 📐 스팀 전용 분석 기준 시트 추가
+
+**v2.7**
 - 🎯 평점 40% + 텍스트 60% 조합 분류 도입
 - 📚 부정 키워드 사전 보완 (서운/제발/이격 등)
 
@@ -1071,7 +1548,11 @@ with st.sidebar:
 - 📋 패치 노트 UI 추가
         ''',
         'JP': '''
-**v2.7** *(現在バージョン)*
+**v2.8** *(現在バージョン)*
+- 🎮 Steam レビュー収集対応
+- 📐 Steam専用分析基準シート追加
+
+**v2.7**
 - 🎯 評価40% + テキスト60% 組み合わせ分類導入
 - 📚 否定キーワード辞書補強
 
@@ -1107,13 +1588,16 @@ st.markdown('---')
 # 플랫폼 선택
 platform = st.radio(
     t['platform_label'],
-    [t['platform_gp'], t['platform_as']],
+    [t['platform_gp'], t['platform_as'], t['platform_st']],
     horizontal=True
 )
 is_appstore = (platform == t['platform_as'])
+is_steam    = (platform == t['platform_st'])
 
 if is_appstore:
     url_input = st.text_input(t['url_label'], placeholder=t['appstore_url_ph'])
+elif is_steam:
+    url_input = st.text_input(t['url_label'], placeholder=t['steam_url_ph'])
 else:
     url_input = st.text_input(t['url_label'], placeholder=t['url_ph'])
 
@@ -1139,6 +1623,8 @@ if is_appstore:
         st.info('🍎 앱스토어 모드 — 앱스토어 URL 또는 숫자 ID를 입력해주세요.\n\n⚠️ Apple RSS API 정책상 최대 **500건**까지만 수집 가능합니다.')
     else:
         st.info('🍎 App Storeモード — URLまたは数字IDを入力してください。\n\n⚠️ Apple RSS APIの制限により、最大 **500件** まで収集可能です。')
+elif is_steam:
+    st.info(t['steam_notice'])
 
 st.markdown('---')
 btn_start = st.button(t['btn_start'], use_container_width=True)
@@ -1162,10 +1648,52 @@ if btn_start:
     target = count_val if is_count_mode else 99999
     prog = progress_bar.progress(0, text=t['prog_collect'])
 
+    # ══════════════════════════
+    # 🎮 스팀 수집
+    # ══════════════════════════
+    if is_steam:
+        steam_id = parse_steam_id(url_input)
+        if not steam_id: st.error(t['err_no_steamid']); st.stop()
+        lang_st = STEAM_LANGS.get(region_code, 'koreana')
+        add_log(f'🎮 스팀 수집 시작 | ID: {steam_id} | 언어: {lang_st} | 목표: {target if is_count_mode else "기간"}')
+        prog.progress(10, text=t['prog_collect'])
+        try:
+            raw_reviews = fetch_steam_reviews(
+                steam_id, language=lang_st,
+                how_many=target,
+                mode='count' if is_count_mode else 'period',
+                dt_from=dt_from_dt if not is_count_mode else None,
+                dt_to=dt_to_dt if not is_count_mode else None,
+            )
+        except Exception as e:
+            st.error(f'❌ 수집 실패: {e}'); st.stop()
+        add_log(t['log_done'].format(len(raw_reviews)))
+        if not raw_reviews: st.error(t['err_no_data']); st.stop()
+        prog.progress(80, text=t['prog_excel'])
+        add_log(t['log_excel'])
+        df = build_df_steam(raw_reviews)
+        fname_prefix = f'steam_{steam_id}'
+        excel_bytes = gen_excel_bytes(df, doc_code, is_steam=True)
+        prog.progress(100, text=t['prog_done'])
+        add_log(t['log_finish'])
+        market_name = 'Steam'
+        date_str = datetime.now().strftime('%y%m%d')
+        fname_base = f'{fname_prefix}_{region_code}_{market_name}_{date_str}'
+        st.session_state['result'] = {
+            'df': df, 'excel_bytes': excel_bytes,
+            'csv_bytes': gen_csv_bytes(df, doc_code),
+            'fname_base': fname_base,
+            'avg': df['평점'].mean(),
+            'pos': int((df['평점']==5).sum()),
+            'neg': int((df['평점']==1).sum()),
+            'total': len(df),
+            'is_steam': True,
+        }
+
     # ══════════════════════════════
     # 🍎 앱스토어 수집
     # ══════════════════════════════
-    if is_appstore:
+    elif is_appstore:
         as_id = parse_appstore_id(url_input)
         if not as_id: st.error(t['err_no_appid']); st.stop()
         pass  # requests는 기본 내장
@@ -1298,9 +1826,15 @@ if 'result' in st.session_state:
     st.markdown(f'### {t["result_title"]}')
     m1,m2,m3,m4 = st.columns(4)
     m1.metric(t['metric_total'], f'{r["total"]:,}{t["unit_count"]}')
-    m2.metric(t['metric_avg'],   f'{r["avg"]:.2f} ★')
-    m3.metric(t['metric_pos'],   f'{r["pos"]:,}{t["unit_count"]} ({r["pos"]/r["total"]*100:.1f}%)')
-    m4.metric(t['metric_neg'],   f'{r["neg"]:,}{t["unit_count"]} ({r["neg"]/r["total"]*100:.1f}%)')
+    if r.get('is_steam'):
+        rec_rate = r["pos"]/r["total"]*100 if r["total"] else 0
+        m2.metric('👍 추천률' if ui_code=='KR' else '👍 推薦率', f'{rec_rate:.1f}%')
+        m3.metric('👍 추천' if ui_code=='KR' else '👍 推薦', f'{r["pos"]:,}{t["unit_count"]}')
+        m4.metric('👎 비추천' if ui_code=='KR' else '👎 非推薦', f'{r["neg"]:,}{t["unit_count"]}')
+    else:
+        m2.metric(t['metric_avg'],   f'{r["avg"]:.2f} ★')
+        m3.metric(t['metric_pos'],   f'{r["pos"]:,}{t["unit_count"]} ({r["pos"]/r["total"]*100:.1f}%)')
+        m4.metric(t['metric_neg'],   f'{r["neg"]:,}{t["unit_count"]} ({r["neg"]/r["total"]*100:.1f}%)')
     dl1, dl2 = st.columns(2)
     with dl1:
         st.download_button(label=t['btn_dl'], data=r['excel_bytes'],
