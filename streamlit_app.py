@@ -327,6 +327,12 @@ def _sec(ws,row,c1,c2,title,bg=C_ACCENT,h=26):
 def _cw(ws,m):
     for col,w in m.items(): ws.column_dimensions[col].width=w
 
+def _hidden(ws, row, col, val):
+    '''차트용 숨김 데이터 — 흰색 글씨로 안 보이게 처리'''
+    c = ws.cell(row=row, column=col, value=val)
+    c.font = Font(color='FFFFFF', size=9, name='Arial')
+    return c
+
 def evaluate_5_insights(df, lang):
     texts_neg=' '.join(df[df['평점']<=2]['내용'].dropna().tolist()).lower()
     texts_pos=' '.join(df[df['평점']>=4]['내용'].dropna().tolist()).lower()
@@ -636,11 +642,6 @@ def mk_dash(ws, df, t):
     dist=df['평점'].value_counts().sort_index()
     mo=df.groupby('작성월').agg(cnt=('평점','count'),avg=('평점','mean')).reset_index()
 
-    def _hidden(ws, row, col, val):
-        c = ws.cell(row=row, column=col, value=val)
-        c.font = Font(color='FFFFFF', size=9, name='Arial')  # 흰색 글씨 = 숨김
-        return c
-
     _hidden(ws,1,19,t['c_score']); _hidden(ws,1,20,t['rev_cnt'])
     for i,star in enumerate([1,2,3,4,5],2):
         _hidden(ws,i,19,f'{star}★'); _hidden(ws,i,20,int(dist.get(star,0)))
@@ -747,16 +748,12 @@ def mk_opinion(ws, df, t, doc_lang):
         _mw(ws,drow,9,drow,12,item['ex'],sz=9,fg='555555',bg=sb,h='left',v='center',wrap=True,it=True)
         drow+=1
     ws.row_dimensions[drow].height=14
-    def _op_hidden(ws, row, col, val):
-        c = ws.cell(row=row, column=col, value=val)
-        c.font = Font(color='FFFFFF', size=9, name='Arial')
-        return c
-    _op_hidden(ws,1,14,t['col_kw']); _op_hidden(ws,1,15,t['col_cnt'])
+    _hidden(ws,1,14,t['col_kw']); _hidden(ws,1,15,t['col_cnt'])
     for i,(lbl,d) in enumerate(ns[:6],2):
-        _op_hidden(ws,i,14,lbl); _op_hidden(ws,i,15,d['count'])
-    _op_hidden(ws,9,14,t['col_kw']); _op_hidden(ws,9,15,t['col_cnt'])
+        _hidden(ws,i,14,lbl); _hidden(ws,i,15,d['count'])
+    _hidden(ws,9,14,t['col_kw']); _hidden(ws,9,15,t['col_cnt'])
     for i,(lbl,d) in enumerate(ps[:5],10):
-        _op_hidden(ws,i,14,lbl); _op_hidden(ws,i,15,d['count'])
+        _hidden(ws,i,14,lbl); _hidden(ws,i,15,d['count'])
     cr=drow+1; nn=min(6,len(ns)); np2=min(5,len(ps))
     _sec(ws,cr,1,6,t['neg_ch'],bg=C_RED)
     nb=BarChart(); nb.type='bar'; nb.style=10; nb.title=None; nb.legend=None
