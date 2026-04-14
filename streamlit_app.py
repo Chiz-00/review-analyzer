@@ -397,12 +397,24 @@ def analyze_kw(df, t):
     REVERSAL_KW=['한데','지만','는데','근데','그러나','하지만','그런데',
                  '이지만','이긴','긴 하','긴하','이긴 하','이긴하']
 
+    # 부정어 목록 (#5 부정어+키워드 조합 강화)
+    NEGATION_WORDS = [
+        '없어요','없음','없네요','없다','없는','없어','없고',
+        '안 ','안되','안됨','안돼','못 ','못함','못해','못하',
+        '전혀','하나도','거의','별로','노 ','노~','ㄴㄴ',
+    ]
+
+    def has_negation_near(text, keyword, window=8):
+        '''키워드 앞뒤 window글자 내에 부정어가 있는지 확인'''
+        idx = text.find(keyword)
+        if idx == -1: return False
+        surrounding = text[max(0, idx-window) : idx+len(keyword)+window]
+        return any(nw in surrounding for nw in NEGATION_WORDS)
+
     def sentiment_score(text):
         '''감성 점수 계산: 양수=긍정, 음수=부정, 0=중립'''
         t_lower = text.lower()
         score = 0
-        # 강도 부사
-        intensifiers = ['진짜','완전','너무','엄청','매우','ㄹㅇ','레알','개','존']
         # 역접어 위치 감지
         reversal_pos = -1
         for rw in REVERSAL_KW:
@@ -414,21 +426,27 @@ def analyze_kw(df, t):
         if reversal_pos > 0:
             before = t_lower[:reversal_pos]
             after  = t_lower[reversal_pos:]
-            # 앞부분 감성 (가중치 낮게)
             for p in POS_EXPR:
                 if p in before: score += 1
             for n in NEG_EXPR:
-                if n in before: score -= 1
-            # 뒷부분 감성 (가중치 높게 — 최종 감정)
+                # 부정어+부정키워드 조합이면 오히려 긍정
+                if n in before:
+                    if has_negation_near(before, n): score += 1
+                    else: score -= 1
             for p in POS_EXPR:
                 if p in after: score += 2
             for n in NEG_EXPR:
-                if n in after: score -= 2
+                if n in after:
+                    if has_negation_near(after, n): score += 2
+                    else: score -= 2
         else:
             for p in POS_EXPR:
                 if p in t_lower: score += 2
             for n in NEG_EXPR:
-                if n in t_lower: score -= 2
+                if n in t_lower:
+                    # 부정어 + 부정키워드 = 긍정으로 재분류
+                    if has_negation_near(t_lower, n): score += 2
+                    else: score -= 2
         return score
 
     def cnt_neg(texts, kw_dict, used):
@@ -646,12 +664,16 @@ def mk_opinion(ws, df, t, doc_lang):
         _mw(ws,drow,9,drow,12,item['ex'],sz=9,fg='555555',bg=sb,h='left',v='center',wrap=True,it=True)
         drow+=1
     ws.row_dimensions[drow].height=14
-    ws.cell(row=1,column=14,value=t['col_kw']); ws.cell(row=1,column=15,value=t['col_cnt'])
+    def _op_hidden(ws, row, col, val):
+        c = ws.cell(row=row, column=col, value=val)
+        c.font = Font(color='FFFFFF', size=9, name='Arial')
+        return c
+    _op_hidden(ws,1,14,t['col_kw']); _op_hidden(ws,1,15,t['col_cnt'])
     for i,(lbl,d) in enumerate(ns[:6],2):
-        ws.cell(row=i,column=14,value=lbl); ws.cell(row=i,column=15,value=d['count'])
-    ws.cell(row=9,column=14,value=t['col_kw']); ws.cell(row=9,column=15,value=t['col_cnt'])
+        _op_hidden(ws,i,14,lbl); _op_hidden(ws,i,15,d['count'])
+    _op_hidden(ws,9,14,t['col_kw']); _op_hidden(ws,9,15,t['col_cnt'])
     for i,(lbl,d) in enumerate(ps[:5],10):
-        ws.cell(row=i,column=14,value=lbl); ws.cell(row=i,column=15,value=d['count'])
+        _op_hidden(ws,i,14,lbl); _op_hidden(ws,i,15,d['count'])
     cr=drow+1; nn=min(6,len(ns)); np2=min(5,len(ps))
     _sec(ws,cr,1,6,t['neg_ch'],bg=C_RED)
     nb=BarChart(); nb.type='bar'; nb.style=10; nb.title=None; nb.legend=None
@@ -723,14 +745,99 @@ def mk_stats(ws, df, t):
             c.font=Font(size=10,name='Arial'); c.alignment=_al()
     _cw(ws,{'A':12,'B':10,'C':12,'D':8,'E':8,'F':8,'G':8,'H':8})
 
+def mk_criteria(ws, t):
+    ws.sheet_view.showGridLines=False
+    is_kr = (t is I18N['KR'])
+
+    # 타이틀
+    title_txt = '📐 분석 기준 시트' if is_kr else '📐 分析基準シート'
+    ws.merge_cells('A1:F1')
+    c=ws['A1']; c.value=title_txt
+    c.font=Font(bold=True,size=15,color=C_WHITE,name='Arial')
+    c.fill=_fill(C_DARK); c.alignment=_al(); ws.row_dimensions[1].height=32
+    ws.row_dimensions[2].height=10
+
+    # ── 섹션1: 감성 점수 기준
+    sec1 = '⭐ 감성 점수 기준' if is_kr else '⭐ 感情スコア基準'
+    _sec(ws,3,1,6,sec1)
+    headers = ['구분','기준','설명'] if is_kr else ['区分','基準','説明']
+    _hr(ws,4,headers+['','',''],bg=C_MID)
+    score_rows_kr = [
+        ('긍정','점수 ≥ +2','긍정 키워드 2개 이상, 부정어 없음'),
+        ('중립','점수 0~+1','긍정·부정 혼재 또는 판단 어려움'),
+        ('부정','점수 ≤ -1','부정 키워드 감지, 긍정 표현 없음'),
+        ('역접어 처리','한데/지만/근데 등','역접어 뒤 내용을 최종 감정으로 판단 (가중치 2배)'),
+        ('부정어 조합','없어요/안/못/전혀 등','부정 키워드 앞뒤에 부정어 있으면 긍정으로 재분류'),
+    ]
+    score_rows_jp = [
+        ('肯定','スコア ≥ +2','肯定キーワード2個以上、否定語なし'),
+        ('中立','スコア 0~+1','肯定・否定が混在または判断困難'),
+        ('否定','スコア ≤ -1','否定キーワード検出、肯定表現なし'),
+        ('逆接語処理','けど/が/でも等','逆接語以降の内容を最終感情として判断(重み2倍)'),
+        ('否定語組合せ','ない/ず/ません等','否定キーワード前後に否定語があれば肯定に再分類'),
+    ]
+    score_rows = score_rows_kr if is_kr else score_rows_jp
+    for i,(a,b,c_txt) in enumerate(score_rows, 5):
+        bg = C_LIGHT if i%2==0 else C_WHITE
+        ws.row_dimensions[i].height=22
+        _w(ws,i,1,a,bold=True,sz=10,bg=bg,h='center')
+        _w(ws,i,2,b,sz=10,bg=bg,h='center')
+        ws.merge_cells(start_row=i,start_column=3,end_row=i,end_column=6)
+        _w(ws,i,3,c_txt,sz=10,bg=bg,h='left',wrap=True)
+    ws.row_dimensions[10].height=12
+
+    # ── 섹션2: 부정 키워드
+    sec2 = '🔴 부정 키워드 목록' if is_kr else '🔴 否定キーワード一覧'
+    _sec(ws,11,1,6,sec2,bg=C_RED)
+    h2 = ['카테고리','키워드 목록'] if is_kr else ['カテゴリ','キーワード一覧']
+    _hr(ws,12,h2+['','','',''],bg=C_MID)
+    row=13
+    for lbl,kws in t['neg_kw'].items():
+        bg=C_LRED if row%2==0 else C_WHITE
+        ws.row_dimensions[row].height=20
+        _w(ws,row,1,lbl,bold=True,sz=10,fg=C_RED,bg=bg,h='center')
+        ws.merge_cells(start_row=row,start_column=2,end_row=row,end_column=6)
+        _w(ws,row,2,'  /  '.join(kws),sz=9,bg=bg,h='left')
+        row+=1
+    ws.row_dimensions[row].height=12; row+=1
+
+    # ── 섹션3: 긍정 키워드
+    sec3 = '🟢 긍정 키워드 목록' if is_kr else '🟢 肯定キーワード一覧'
+    _sec(ws,row,1,6,sec3,bg=C_GREEN); row+=1
+    h3 = ['카테고리','키워드 목록'] if is_kr else ['カテゴリ','キーワード一覧']
+    _hr(ws,row,h3+['','','',''],bg=C_MID); row+=1
+    for lbl,kws in t['pos_kw'].items():
+        bg=C_LGREEN if row%2==0 else C_WHITE
+        ws.row_dimensions[row].height=20
+        _w(ws,row,1,lbl,bold=True,sz=10,fg=C_GREEN,bg=bg,h='center')
+        ws.merge_cells(start_row=row,start_column=2,end_row=row,end_column=6)
+        _w(ws,row,2,'  /  '.join(kws),sz=9,bg=bg,h='left')
+        row+=1
+    ws.row_dimensions[row].height=12; row+=1
+
+    # ── 섹션4: 부정어 목록
+    sec4 = '🚫 부정어 목록 (이 단어+부정키워드 = 긍정 재분류)' if is_kr else '🚫 否定語一覧 (否定語+否定KW = 肯定に再分類)'
+    _sec(ws,row,1,6,sec4,bg=C_BLUE); row+=1
+    neg_words_kr = ['없어요','없음','없네요','없다','안','못','안됨','안돼','노','전혀','하나도','거의','별로 안','전혀 안']
+    neg_words_jp = ['ない','ず','ません','なし','全然','ほとんど','あまり','全く']
+    neg_words = neg_words_kr if is_kr else neg_words_jp
+    ws.row_dimensions[row].height=30
+    ws.merge_cells(start_row=row,start_column=1,end_row=row,end_column=6)
+    _w(ws,row,1,'  /  '.join(neg_words),sz=10,bg=C_LIGHT,h='left',wrap=True)
+
+    _cw(ws,{'A':20,'B':50,'C':15,'D':15,'E':15,'F':15})
+
 def gen_excel_bytes(df, doc_lang):
     t=I18N[doc_lang]; wb=Workbook()
     ws1=wb.active; ws1.title=t['sh_dash']; mk_dash(ws1,df,t)
     ws2=wb.create_sheet(t['sh_op']);   mk_opinion(ws2,df,t,doc_lang)
     ws3=wb.create_sheet(t['sh_raw']);  mk_raw(ws3,df,t)
     ws4=wb.create_sheet(t['sh_stat']); mk_stats(ws4,df,t)
+    sh_crit = '📐 분석기준' if doc_lang=='KR' else '📐 分析基準'
+    ws5=wb.create_sheet(sh_crit); mk_criteria(ws5,t)
     ws1.sheet_properties.tabColor=C_ACCENT; ws2.sheet_properties.tabColor=C_GOLD
     ws3.sheet_properties.tabColor=C_GREEN;  ws4.sheet_properties.tabColor=C_BLUE
+    ws5.sheet_properties.tabColor='9B59B6'
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.getvalue()
 
@@ -881,9 +988,17 @@ with st.sidebar:
     st.markdown('VIC GAME STUDIOS')
     st.markdown('일본사업실 박경원')
     st.markdown('---')
-    with st.expander('📋 패치 노트 / Patch Notes'):
-        st.markdown('''
-**v2.5** *(현재 버전)*
+    PATCH_NOTES = {
+        'KR': '''
+**v2.6** *(현재 버전)*
+- 🚫 부정어+키워드 조합 감성분석 강화
+  - "버그 없어요" → 긍정 재분류
+  - "렉 안걸려요" → 긍정 재분류
+- 📋 분석 기준 시트 추가
+- 🔒 여론분석 시트 숨김 데이터 처리
+- 📁 파일명 형식 변경 (게임명_국가_마켓_날짜)
+
+**v2.5**
 - 🔒 다운로드 후 결과창 유지 개선
 - 📊 대시보드 숨김 데이터 노출 수정
 - 🍎 앱스토어 500건 제한 안내 문구 추가
@@ -894,25 +1009,35 @@ with st.sidebar:
 
 **v2.3**
 - 🔍 규칙 기반 감성분석 고도화
-  - 게임 슬랭 사전 추가 (갓겜·런함·흑우 등)
-  - 역접어 패턴 감지 (한데/지만/근데)
-  - 감성 점수 시스템 도입
-- 📄 리뷰 전체 CSV 다운로드 기능 추가 (UTF-8)
+- 📄 리뷰 전체 CSV 다운로드 기능 추가
 - 📋 패치 노트 UI 추가
-- 🗓️ 대시보드 날짜 헤더 수정
+        ''',
+        'JP': '''
+**v2.6** *(現在バージョン)*
+- 🚫 否定語+キーワード組み合わせ強化
+  - 「バグないです」→ 肯定に再分類
+  - 「ラグかからない」→ 肯定に再分類
+- 📋 分析基準シート追加
+- 🔒 世論分析シート非表示データ処理
+- 📁 ファイル名形式変更 (ゲーム名_国_マーケット_日付)
 
-**v2.2**
-- 🌏 수집 국가 확장 (KR/JP → KR/JP/US/TW/GB)
-- 🌐 UI 언어 전환 전체 적용
-- 🔧 여론분석 키워드 전체 출력 버그 수정
-- 📊 문서 언어 JP 한국어 잔존 버그 수정
-- 👤 만든이 표기 정리
+**v2.5**
+- 🔒 ダウンロード後も結果画面を維持
+- 📊 ダッシュボード非表示データ修正
+- 🍎 App Store 500件制限案内追加
 
-**v2.1**
-- 📈 월별 추이 차트 복합 차트로 개선
-- 🟢 긍정 대표 리뷰 예시 필터 강화
-- 🔄 키워드 간 예시 중복 방지
-        ''')
+**v2.4**
+- 🍎 App Store(iOS) レビュー収集対応
+- 📄 CSV文書言語(KR/JP)反映
+
+**v2.3**
+- 🔍 ルールベース感情分析高度化
+- 📄 レビューCSVダウンロード機能追加
+- 📋 パッチノートUI追加
+        '''
+    }
+    with st.expander('📋 패치 노트 / Patch Notes'):
+        st.markdown(PATCH_NOTES[ui_code])
 
 st.markdown(f'# {t["title"]}')
 st.markdown('---')
@@ -1089,7 +1214,10 @@ if btn_start:
     add_log(t['log_finish'])
 
     # session_state에 결과 저장 (다운로드 후에도 유지)
-    fname_base = f'{fname_prefix}_review_{datetime.now().strftime("%Y%m%d_%H%M")}'
+    # #2 파일명: 게임이름_국가_마켓명_날짜
+    market_name = 'AppStore' if is_appstore else 'GooglePlay'
+    date_str = datetime.now().strftime('%y%m%d')
+    fname_base = f'{fname_prefix}_{region_code}_{market_name}_{date_str}'
     st.session_state['result'] = {
         'df': df,
         'excel_bytes': excel_bytes,
