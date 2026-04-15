@@ -395,6 +395,10 @@ def evaluate_5_insights(df, lang):
                 ('経済 (ガチャ・資源供給)',ee,ec),('プラットフォーム',pe,pc),('ブランド',be,bc)]
 
 def analyze_kw(df, t):
+    # 여론분석 시 이상 리뷰 제외 (전체리뷰 시트에는 영향 없음)
+    df_analysis, removed = filter_abnormal_reviews(df)
+    if removed > 0:
+        df = df_analysis  # 분석용 df만 교체
     # ── 평점 40% + sentiment_score 60% 조합 버킷 분류
     # 1단계: 간이 sentiment_score 사전 (버킷 분류용)
     _POS_KW = ['재밌','좋아','최고','갓겜','꿀잼','대박','짱','추천','만족','감동',
@@ -1227,12 +1231,41 @@ def filter_abnormal_reviews(df):
 # ══════════════════════════════════════════
 # 워드클라우드 생성 (#3)
 # ══════════════════════════════════════════
+def get_korean_font():
+    '''한국어 폰트 경로 반환 — 없으면 나눔고딕 다운로드'''
+    import os, urllib.request
+    FONT_PATH = '/tmp/NanumGothic.ttf'
+    FONT_URL  = 'https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf'
+
+    # 이미 있으면 바로 반환
+    if os.path.exists(FONT_PATH):
+        return FONT_PATH
+
+    # 시스템 폰트 먼저 확인
+    candidates = [
+        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+        '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+        '/usr/share/fonts/truetype/unfonts-core/UnBatang.ttf',
+    ]
+    for fp in candidates:
+        if os.path.exists(fp):
+            return fp
+
+    # 없으면 다운로드
+    try:
+        urllib.request.urlretrieve(FONT_URL, FONT_PATH)
+        if os.path.exists(FONT_PATH):
+            return FONT_PATH
+    except Exception:
+        pass
+    return None
+
 def gen_wordcloud_image(df, region_code='KR', is_neg=True):
     '''워드클라우드 이미지 생성 → bytes 반환'''
     if not HAS_WORDCLOUD:
         return None
     try:
-        import urllib.request, os, tempfile
+        import os
         # 감성 기준으로 텍스트 분리
         if is_neg:
             texts = df[df['평점'] <= 2]['내용'].dropna().tolist()
@@ -1244,26 +1277,17 @@ def gen_wordcloud_image(df, region_code='KR', is_neg=True):
 
         text_all = ' '.join(texts)
 
-        # 불용어 (분석에 의미없는 단어)
+        # 불용어
         stopwords = set([
             '게임','이게','그게','이거','저거','그거','있어','없어','해요',
             '해서','하고','하는','하면','되는','되어','이라','이런','그런',
             '저런','같아','같은','같이','때문','정말','진짜','너무','매우',
-            '조금','좀더','더욱','아주','매우','이제','그냥','그래','그리고',
+            '조금','좀더','더욱','아주','이제','그냥','그래','그리고',
             'the','and','for','this','that','with','have','from',
         ])
 
-        # 폰트 경로 (Streamlit Cloud 환경)
-        font_candidates = [
-            '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-            '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-        ]
-        font_path = None
-        for fp in font_candidates:
-            if os.path.exists(fp):
-                font_path = fp
-                break
+        # 한국어 폰트 가져오기
+        font_path = get_korean_font()
 
         wc_kwargs = dict(
             width=800, height=400,
@@ -1447,6 +1471,10 @@ def build_df_steam(raw):
 
 def analyze_kw_steam(df, t):
     '''스팀 전용 여론 분석 — 추천여부 기반 버킷 분류'''
+    # 여론분석 시 이상 리뷰 제외 (전체리뷰에는 영향 없음)
+    df_analysis, removed = filter_abnormal_reviews(df)
+    if removed > 0:
+        df = df_analysis
     # 스팀은 추천/비추천이 명확해서 그걸 기준으로 버킷 분류
     neg_tx = df[df['평점']==1]['내용'].dropna()
     pos_tx = df[df['평점']==5]['내용'].dropna()
@@ -1871,10 +1899,7 @@ if btn_start:
         if not raw_reviews: st.error(t['err_no_data']); st.stop()
         prog.progress(80, text=t['prog_excel'])
         add_log(t['log_excel'])
-        df_raw = build_df_steam(raw_reviews)
-        df, removed = filter_abnormal_reviews(df_raw)
-        if removed > 0:
-            add_log(f'🧹 이상 리뷰 {removed:,}건 제외 (총 {len(df):,}건 분석)')
+        df = build_df_steam(raw_reviews)
         fname_prefix = f'steam_{steam_id}'
         excel_bytes = gen_excel_bytes(df, doc_code, is_steam=True)
         prog.progress(100, text=t['prog_done'])
@@ -1926,10 +1951,7 @@ if btn_start:
         if not raw_reviews: st.error(t['err_no_data']); st.stop()
         prog.progress(80, text=t['prog_excel'])
         add_log(t['log_excel'])
-        df_raw = build_df_appstore(raw_reviews)
-        df, removed = filter_abnormal_reviews(df_raw)
-        if removed > 0:
-            add_log(f'🧹 이상 리뷰 {removed:,}건 제외 (총 {len(df):,}건 분석)')
+        df = build_df_appstore(raw_reviews)
         fname_prefix = f'appstore_{as_id}'
 
     # ══════════════════════════════
@@ -2002,10 +2024,7 @@ if btn_start:
 
         prog.progress(85, text=t['prog_excel'])
         add_log(t['log_excel'])
-        df_raw = build_df(all_r)
-        df, removed = filter_abnormal_reviews(df_raw)
-        if removed > 0:
-            add_log(f'🧹 이상 리뷰 {removed:,}건 제외 (총 {len(df):,}건 분석)')
+        df = build_df(all_r)
         fname_prefix = app_id.split('.')[-1]
 
     excel_bytes = gen_excel_bytes(df, doc_code)
