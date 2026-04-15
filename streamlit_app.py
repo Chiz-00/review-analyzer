@@ -90,6 +90,14 @@ I18N = {
         'platform_gp':'🤖 구글 플레이',
         'platform_as':'🍎 앱스토어 (iOS)',
         'platform_st':'🎮 스팀 (Steam)',
+        'platform_dc':'🔥 디시인사이드',
+        'dc_url_ph':'https://gall.dcinside.com/mgallery/board/lists/?id=갤러리ID  또는  갤러리ID만 입력',
+        'dc_keyword_label':'🔍 키워드 필터 (선택사항)',
+        'dc_keyword_ph':'예: 버그, 패치, 업데이트 — 비워두면 전체 수집',
+        'dc_notice':'🔥 디시인사이드 마이너 갤러리 분석\n\n⚠️ 내부 업무용 — 3~5초 랜덤 딜레이 적용',
+        'err_no_dcid':'올바른 갤러리 URL 또는 갤러리 ID를 입력해주세요.',
+        'dc_post_label':'📝 게시글',
+        'dc_comment_label':'💬 댓글',
         'steam_url_ph':'https://store.steampowered.com/app/1234567/게임명  또는  앱 ID(숫자)',
         'err_no_steamid':'올바른 스팀 URL 또는 앱 ID(숫자)를 입력해주세요.',
         'steam_lang_label':'🌐 리뷰 언어',
@@ -209,6 +217,14 @@ I18N = {
         'platform_gp':'🤖 Google Play',
         'platform_as':'🍎 App Store (iOS)',
         'platform_st':'🎮 Steam',
+        'platform_dc':'🔥 DCインサイド',
+        'dc_url_ph':'https://gall.dcinside.com/mgallery/board/lists/?id=ギャラリーID  または  IDのみ入力',
+        'dc_keyword_label':'🔍 キーワードフィルター (任意)',
+        'dc_keyword_ph':'例: バグ, パッチ — 空白で全件収集',
+        'dc_notice':'🔥 DCインサイド マイナーギャラリー分析\n\n⚠️ 内部業務用 — 3〜5秒ランダム遅延適用',
+        'err_no_dcid':'正しいギャラリーURLまたはIDを入力してください。',
+        'dc_post_label':'📝 投稿',
+        'dc_comment_label':'💬 コメント',
         'steam_url_ph':'https://store.steampowered.com/app/1234567/ゲーム名  または  アプリID(数字)',
         'err_no_steamid':'正しいSteam URLまたはアプリID(数字)を入力してください。',
         'steam_lang_label':'🌐 レビュー言語',
@@ -1370,6 +1386,624 @@ def get_kw_dicts_by_region(region_code, lang_code):
         return TW_NEG_KW, TW_POS_KW
     return None, None  # KR/JP는 기존 I18N 사전 사용
 
+# ══════════════════════════════════════════
+# 디시인사이드 크롤링 함수
+# ══════════════════════════════════════════
+def parse_dc_id(text):
+    '''갤러리 ID 추출'''
+    text = text.strip()
+    import re as _re
+    m = _re.search(r'[?&]id=([^&\x20]+)', text)
+    if m: return m.group(1)
+    if _re.match(r'^[a-zA-Z0-9_]+$', text): return text
+    return None
+
+def fetch_dc_posts(gall_id, how_many=300, keyword='',
+                   mode='count', dt_from=None, dt_to=None):
+    '''디시인사이드 마이너 갤러리 게시글 크롤링'''
+    try:
+        from bs4 import BeautifulSoup
+        import urllib.request, urllib.parse, random, time as _time
+    except ImportError:
+        return [], '❌ beautifulsoup4 라이브러리가 필요합니다.'
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://gall.dcinside.com',
+    }
+
+    all_posts = []; page = 1; stop = False
+
+    while not stop:
+        try:
+            # 키워드 검색 or 전체 목록
+            if keyword:
+                params = urllib.parse.urlencode({
+                    'id': gall_id, 'page': page,
+                    's_type': 'search_subject_memo',
+                    's_keyword': keyword,
+                })
+                url = f'https://gall.dcinside.com/mgallery/board/lists/?{params}'
+            else:
+                url = f'https://gall.dcinside.com/mgallery/board/lists/?id={gall_id}&page={page}'
+
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as r:
+                html = r.read().decode('utf-8', errors='ignore')
+
+            soup = BeautifulSoup(html, 'html.parser')
+            rows = soup.select('tr.ub-content')
+
+            if not rows:
+                break
+
+            for row in rows:
+                try:
+                    # 공지/광고 제외
+                    if row.select_one('.icon_notice') or row.select_one('.icon_ad'):
+                        continue
+
+                    title_el = row.select_one('.gall_tit a')
+                    if not title_el: continue
+                    title = title_el.get_text(strip=True)
+
+                    # 날짜
+                    date_el = row.select_one('.gall_date')
+                    date_str = date_el['title'] if date_el and date_el.get('title') else (date_el.get_text(strip=True) if date_el else '')
+                    try:
+                        at = datetime.strptime(date_str[:10], '%Y-%m-%d')
+                    except:
+                        at = None
+
+                    # 기간 필터
+                    if mode == 'period' and at:
+                        if at < dt_from: stop = True; break
+                        if at > dt_to: continue
+
+                    # 조회수/추천수/댓글수
+                    view_el = row.select_one('.gall_count')
+                    like_el = row.select_one('.gall_recommend')
+                    cmt_el  = row.select_one('.reply_num')
+                    views   = int(view_el.get_text(strip=True).replace(',','')) if view_el else 0
+                    likes   = int(like_el.get_text(strip=True).replace(',','')) if like_el else 0
+                    cmts    = int(cmt_el.get_text(strip=True).strip('[]').replace(',','')) if cmt_el else 0
+
+                    # 게시글 URL
+                    href = title_el.get('href','')
+                    post_url = f'https://gall.dcinside.com{href}' if href.startswith('/') else href
+
+                    # 번호
+                    num_el = row.select_one('.gall_num')
+                    post_id = num_el.get_text(strip=True) if num_el else ''
+
+                    all_posts.append({
+                        'post_id': post_id, 'title': title,
+                        'content': '', 'url': post_url,
+                        'date': at.strftime('%Y-%m-%d') if at else '',
+                        'month': at.strftime('%Y-%m') if at else '',
+                        'views': views, 'likes': likes, 'comments': cmts,
+                        'type': 'post',
+                    })
+
+                    if mode == 'count' and len(all_posts) >= how_many:
+                        stop = True; break
+
+                except Exception:
+                    continue
+
+            page += 1
+            _time.sleep(random.uniform(3.0, 5.0))
+
+        except Exception:
+            break
+
+    return all_posts, None
+
+def fetch_dc_post_detail(post_url, headers=None):
+    '''게시글 본문 + 댓글 수집'''
+    try:
+        from bs4 import BeautifulSoup
+        import urllib.request
+        if not headers:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://gall.dcinside.com',
+            }
+        req = urllib.request.Request(post_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            html = r.read().decode('utf-8', errors='ignore')
+        soup = BeautifulSoup(html, 'html.parser')
+
+        # 본문
+        content_el = soup.select_one('.write_div')
+        content = content_el.get_text(separator=' ', strip=True) if content_el else ''
+
+        # 댓글
+        comments = []
+        for cmt in soup.select('.usertxt.ub-word'):
+            txt = cmt.get_text(strip=True)
+            if txt and len(txt) >= 2:
+                comments.append(txt)
+
+        # 추천/비추천
+        like_el   = soup.select_one('.up_num')
+        dislike_el= soup.select_one('.down_num')
+        likes   = int(like_el.get_text(strip=True)) if like_el else 0
+        dislikes= int(dislike_el.get_text(strip=True)) if dislike_el else 0
+
+        return content, comments, likes, dislikes
+    except Exception:
+        return '', [], 0, 0
+
+def build_df_dc(posts):
+    '''디시 게시글 → DataFrame'''
+    rows = []
+    for p in posts:
+        rows.append({
+            '번호'    : p.get('post_id',''),
+            '제목'    : p.get('title',''),
+            '내용'    : p.get('content','').replace('\n',' ')[:500],
+            '작성일'  : p.get('date',''),
+            '작성월'  : p.get('month',''),
+            '조회수'  : p.get('views',0),
+            '추천수'  : p.get('likes',0),
+            '비추천수': p.get('dislikes',0),
+            '댓글수'  : p.get('comments',0),
+            '타입'    : p.get('type','post'),
+            'URL'    : p.get('url',''),
+        })
+    return pd.DataFrame(rows)
+
+# ══════════════════════════════════════════
+# 디시 여론분석
+# ══════════════════════════════════════════
+def analyze_dc(posts_df, comments_list, t):
+    '''디시 게시글+댓글 여론 분석'''
+    NEG_EXPR = ['버그','최악','짜증','불편','렉','망겜','서운','아쉽','실망','후회',
+                '제발','비싸','확률','과금','런함','접음','쓰레기','사기','기만',
+                '방치','운영','환불','호구','흑우','노답','개판','망했','나락',
+                '섭종','뒤통수','하지마','비추','돈낭비','시간낭비','아깝',
+                '이격','인플레','믿어본다','기대이하','낙담','허탈','열받']
+    POS_EXPR = ['재밌','좋아','최고','갓겜','꿀잼','대박','추천','만족','감동',
+                '몰입','좋음','좋다','재미있','퀄리티','굿','굳','존잼','강추',
+                '중독','힐링','명작','인생겜','레전드','완벽','훌륭','갓']
+    REVERSAL_KW = ['한데','지만','는데','근데','그러나','하지만','그런데','이긴','긴하']
+    NEGATION_WORDS = ['없어요','없음','없다','없어','안 ','안됨','안돼','못 ','전혀','하나도']
+
+    def has_negation_near(text, keyword, window=8):
+        idx = text.find(keyword)
+        if idx == -1: return False
+        surr = text[max(0,idx-window):idx+len(keyword)+window]
+        return any(nw in surr for nw in NEGATION_WORDS)
+
+    def sent_score(text):
+        t_lower = text.lower(); score = 0
+        rev_pos = -1
+        for rw in REVERSAL_KW:
+            idx = t_lower.find(rw)
+            if idx != -1: rev_pos = idx; break
+        if rev_pos > 0:
+            before = t_lower[:rev_pos]; after = t_lower[rev_pos:]
+            for p in POS_EXPR:
+                if p in before: score += 1
+            for n in NEG_EXPR:
+                if n in before:
+                    score += 1 if has_negation_near(before,n) else -1
+            for p in POS_EXPR:
+                if p in after: score += 2
+            for n in NEG_EXPR:
+                if n in after:
+                    score += 2 if has_negation_near(after,n) else -2
+        else:
+            for p in POS_EXPR:
+                if p in t_lower: score += 2
+            for n in NEG_EXPR:
+                if n in t_lower:
+                    score += 2 if has_negation_near(t_lower,n) else -2
+        return score
+
+    # 게시글 감성 분류
+    # 추천수 기반(likes>0) + 텍스트 조합
+    def classify(row):
+        text = str(row.get('제목','')) + ' ' + str(row.get('내용',''))
+        sc = sent_score(text)
+        likes = row.get('추천수', 0)
+        dislikes = row.get('비추천수', 0)
+        # 추천/비추 가중치
+        like_score = (likes - dislikes) * 0.3
+        combined = sc * 0.7 + like_score
+        if combined > 0.5: return 'pos'
+        elif combined < -0.5: return 'neg'
+        else: return 'neu'
+
+    posts_df = posts_df.copy()
+    posts_df['감성'] = posts_df.apply(classify, axis=1)
+
+    # 댓글 감성 분류
+    cmt_pos = [c for c in comments_list if sent_score(c) > 0]
+    cmt_neg = [c for c in comments_list if sent_score(c) < 0]
+
+    neg_posts = posts_df[posts_df['감성']=='neg']
+    pos_posts = posts_df[posts_df['감성']=='pos']
+
+    dc_neg_kw = {
+        '버그·오류':     ['버그','오류','에러','오작동','튕기','강제종료'],
+        '최적화·성능':   ['렉','버벅','최적화','발열','프레임','끊김'],
+        '운영·업데이트': ['운영','업데이트','방치','공지','패치','노답'],
+        '과금·뽑기':     ['과금','뽑기','확률','가챠','현질','비싸','천장'],
+        '밸런스':        ['밸런스','너프','강캐','약캐','사기'],
+        '스토리·콘텐츠': ['스토리','콘텐츠','반복','지루','노잼','부족'],
+    }
+    dc_pos_kw = {
+        '그래픽·아트':   ['그래픽','아트','예쁘','퀄리티','일러스트'],
+        '게임성·전투':   ['전투','전략','재밌','꿀잼','갓겜','중독'],
+        '스토리·세계관': ['스토리','세계관','몰입','감동','흥미'],
+        '운영·이벤트':   ['이벤트','보상','업데이트','관대','무료'],
+        '커뮤니티':      ['같이','파티','길드','친구','멀티'],
+    }
+
+    def count_kw(texts, kw_dict):
+        res = {}
+        for lbl, kws in kw_dict.items():
+            cnt = 0; ex = []
+            for tx in texts:
+                s = str(tx).lower()
+                if any(k in s for k in kws):
+                    cnt += 1
+                    if len(ex) < 2 and len(str(tx)) >= 5:
+                        ex.append(str(tx)[:80])
+            res[lbl] = {'count': cnt, 'examples': ex}
+        return res
+
+    neg_texts = neg_posts['제목'].tolist() + neg_posts['내용'].tolist() + cmt_neg
+    pos_texts = pos_posts['제목'].tolist() + pos_posts['내용'].tolist() + cmt_pos
+
+    nr = count_kw(neg_texts, dc_neg_kw)
+    pr = count_kw(pos_texts, dc_pos_kw)
+    ns = sorted(nr.items(), key=lambda x:x[1]['count'], reverse=True)
+    ps = sorted(pr.items(), key=lambda x:x[1]['count'], reverse=True)
+
+    total = len(posts_df); pos_cnt = len(pos_posts); neg_cnt = len(neg_posts)
+    pos_r = pos_cnt/total if total else 0; neg_r = neg_cnt/total if total else 0
+
+    if pos_r > 0.6:   mood = f'전반적으로 긍정 여론({pos_r*100:.1f}%)이 우세'
+    elif pos_r > 0.4: mood = f'긍정({pos_r*100:.1f}%)과 부정({neg_r*100:.1f}%) 여론이 팽팽히 혼재'
+    else:             mood = f'부정 여론({neg_r*100:.1f}%)이 우세, 커뮤니티 불만 높음'
+
+    top_neg = ns[0][0] if ns else '-'
+    top_pos = ps[0][0] if ps else '-'
+    one_line = f'{top_pos} 관련 만족도는 높으나, {top_neg} 관련 불만이 지속 제기됨. {mood}.'
+
+    return posts_df, ns, ps, one_line, cmt_pos, cmt_neg
+
+# ══════════════════════════════════════════
+# 디시 엑셀 시트 생성 함수들
+# ══════════════════════════════════════════
+def mk_dc_dashboard(ws, df, ns, ps, one_line):
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells('A1:N3'); c=ws['A1']
+    c.value = '🔥  디시인사이드 갤러리 여론 분석 대시보드'
+    c.font=Font(bold=True,size=18,color=C_WHITE,name='Arial')
+    c.fill=_fill('CC2200'); c.alignment=_al()
+    for r in [1,2,3]: ws.row_dimensions[r].height=40
+    ws.merge_cells('A4:N4'); s=ws['A4']
+    total=len(df); pos=len(df[df['감성']=='pos']); neg=len(df[df['감성']=='neg'])
+    s.value = f'  총 게시글 {total:,}건  |  긍정 {pos/total*100:.1f}%  /  부정 {neg/total*100:.1f}%  |  {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+    s.font=Font(size=9,color='BBBBBB',name='Arial'); s.fill=_fill(C_MID); s.alignment=_al('left')
+    ws.row_dimensions[4].height=18; ws.row_dimensions[5].height=10
+
+    # KPI
+    neu = total - pos - neg
+    avg_views = df['조회수'].mean()
+    avg_likes = df['추천수'].mean()
+    kpis = [
+        ('📝 총 게시글', f'{total:,}', C_DARK, ''),
+        ('🟢 긍정 게시글', f'{pos:,}', C_GREEN, f'{pos/total*100:.1f}%'),
+        ('🔴 부정 게시글', f'{neg:,}', C_RED, f'{neg/total*100:.1f}%'),
+        ('😐 중립 게시글', f'{neu:,}', C_BLUE, f'{neu/total*100:.1f}%'),
+        ('👁️ 평균 조회수', f'{avg_views:.0f}', C_ACCENT, ''),
+        ('👍 평균 추천수', f'{avg_likes:.1f}', C_GOLD, ''),
+    ]
+    for (c1,c2),(lbl,val,col,sub) in zip(zip([1,3,5,7,9,11],[2,4,6,8,10,12]),kpis):
+        for r in [6,7,8,9]: ws.merge_cells(start_row=r,start_column=c1,end_row=r,end_column=c2)
+        lc=ws.cell(row=6,column=c1,value=lbl); lc.font=Font(bold=True,size=9,color=C_WHITE,name='Arial')
+        lc.fill=_fill(col); lc.alignment=_al()
+        vc=ws.cell(row=7,column=c1,value=val); vc.font=Font(bold=True,size=18,color=C_WHITE,name='Arial')
+        vc.fill=_fill(col); vc.alignment=_al()
+        sc=ws.cell(row=8,column=c1,value=sub); sc.font=Font(size=9,color=C_WHITE,name='Arial')
+        sc.fill=_fill(col); sc.alignment=_al()
+        ws.cell(row=9,column=c1).fill=_fill(col)
+        for r,h in [(6,18),(7,36),(8,16),(9,6)]: ws.row_dimensions[r].height=h
+
+    ws.row_dimensions[10].height=10
+    # 종합 한줄 요약
+    ws.merge_cells('A11:N11')
+    c=ws.cell(row=11,column=1,value=f'📌  {one_line}')
+    c.font=Font(bold=True,size=11,color=C_WHITE,name='Arial')
+    c.fill=_fill('CC2200'); c.alignment=_al('left',wrap=True)
+    ws.row_dimensions[11].height=36; ws.row_dimensions[12].height=10
+
+    # 월별 추이 데이터
+    mo = df.groupby('작성월').agg(
+        total=('번호','count'),
+        pos=('감성', lambda x:(x=='pos').sum()),
+        neg=('감성', lambda x:(x=='neg').sum())
+    ).reset_index()
+    _hidden(ws,1,16,'월'); _hidden(ws,1,17,'게시글'); _hidden(ws,1,18,'긍정'); _hidden(ws,1,19,'부정')
+    for i,r in enumerate(mo.itertuples(),2):
+        _hidden(ws,i,16,r.작성월); _hidden(ws,i,17,r.total)
+        _hidden(ws,i,18,r.pos); _hidden(ws,i,19,r.neg)
+
+    # 부정/긍정 파이 데이터
+    _hidden(ws,1,21,'구분'); _hidden(ws,1,22,'건수')
+    _hidden(ws,2,21,'긍정'); _hidden(ws,2,22,int(pos))
+    _hidden(ws,3,21,'부정'); _hidden(ws,3,22,int(neg))
+    _hidden(ws,4,21,'중립'); _hidden(ws,4,22,int(neu))
+
+    # 파이차트
+    _sec(ws,13,1,6,'🥧 긍정/부정/중립 비율',bg='CC2200')
+    pie=PieChart(); pie.style=10; pie.title=None; pie.width=14; pie.height=11
+    pie.add_data(Reference(ws,min_col=22,min_row=1,max_row=4),titles_from_data=True)
+    pie.set_categories(Reference(ws,min_col=21,min_row=2,max_row=4))
+    for idx,c in enumerate(['27AE60','C0392B','7F8C8D']):
+        pt=DataPoint(idx=idx); pt.graphicalProperties.solidFill=c; pie.series[0].dPt.append(pt)
+    ws.add_chart(pie,'A14')
+
+    # 월별 추이 차트
+    n=len(mo)
+    _sec(ws,13,7,14,'📈 월별 게시글 수 & 긍/부정 추이',bg='CC2200')
+    bar=BarChart(); bar.type='col'; bar.style=10; bar.title=None
+    bar.width=18; bar.height=11; bar.y_axis.title='게시글수'
+    d1=Reference(ws,min_col=17,min_row=1,max_row=1+n)
+    bar.add_data(d1,titles_from_data=True)
+    bar.set_categories(Reference(ws,min_col=16,min_row=2,max_row=1+n))
+    bar.series[0].graphicalProperties.solidFill='CC2200'
+    ws.add_chart(bar,'G14')
+
+    _cw(ws,{c:w for c,w in zip('ABCDEFGHIJKLMN',[10,10,10,10,10,10,10,10,10,10,10,10,10,10])})
+
+def mk_dc_hot_posts(ws, df):
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells('A1:J1'); c=ws['A1']
+    c.value = '🔥  화제글 TOP 10 (추천수 기준)'
+    c.font=Font(bold=True,size=15,color=C_WHITE,name='Arial')
+    c.fill=_fill('CC2200'); c.alignment=_al(); ws.row_dimensions[1].height=30
+    ws.row_dimensions[2].height=8
+    _hr(ws,3,['순위','감성','제목','내용 요약','작성일','조회수','추천수','비추천수','댓글수',''],bg=C_MID)
+    top10 = df.nlargest(10, '추천수')
+    for i,(_,r) in enumerate(top10.iterrows(),4):
+        is_pos = r.get('감성','neu') == 'pos'
+        is_neg = r.get('감성','neu') == 'neg'
+        bg = C_LGREEN if is_pos else (C_LRED if is_neg else C_LIGHT)
+        sc = C_GREEN if is_pos else (C_RED if is_neg else C_BLUE)
+        ws.row_dimensions[i].height=40
+        _w(ws,i,1,f'{i-3}위',bold=True,sz=11,fg=C_WHITE,bg='CC2200',h='center')
+        sentiment_txt = '🟢 긍정' if is_pos else ('🔴 부정' if is_neg else '😐 중립')
+        _w(ws,i,2,sentiment_txt,bold=True,sz=9,fg=sc,bg=bg,h='center')
+        ws.merge_cells(start_row=i,start_column=3,end_row=i,end_column=5)
+        _w(ws,i,3,str(r.get('제목',''))[:60],sz=9,bg=bg,h='left',wrap=True)
+        ws.merge_cells(start_row=i,start_column=6,end_row=i,end_column=8) if False else None
+        _w(ws,i,4,str(r.get('내용',''))[:80],sz=9,bg=bg,h='left',wrap=True)
+        _w(ws,i,5,r.get('작성일',''),sz=9,bg=bg,h='center')
+        _w(ws,i,6,r.get('조회수',0),sz=9,bg=bg,h='center')
+        _w(ws,i,7,r.get('추천수',0),bold=True,sz=10,fg=C_GREEN,bg=bg,h='center')
+        _w(ws,i,8,r.get('비추천수',0),bold=True,sz=10,fg=C_RED,bg=bg,h='center')
+        _w(ws,i,9,r.get('댓글수',0),sz=9,bg=bg,h='center')
+    _cw(ws,{'A':8,'B':10,'C':30,'D':35,'E':12,'F':10,'G':10,'H':10,'I':10,'J':8})
+
+def mk_dc_opinion(ws, df, ns, ps, one_line, cmt_pos, cmt_neg):
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells('A1:L3'); c=ws['A1']
+    c.value = '🗣️  키워드 여론 분석 리포트'
+    c.font=Font(bold=True,size=18,color=C_WHITE,name='Arial')
+    c.fill=_fill('CC2200'); c.alignment=_al()
+    for r in [1,2,3]: ws.row_dimensions[r].height=40
+    total=len(df); pos=len(df[df['감성']=='pos']); neg=len(df[df['감성']=='neg'])
+    ws.merge_cells('A4:L4'); s=ws['A4']
+    s.value = f'  게시글 {total:,}건  |  긍정 {pos/total*100:.1f}%  /  부정 {neg/total*100:.1f}%  |  댓글 긍정 {len(cmt_pos):,}건 / 부정 {len(cmt_neg):,}건  |  {datetime.now().strftime("%Y-%m-%d")}'
+    s.font=Font(size=9,color='BBBBBB',name='Arial'); s.fill=_fill(C_MID); s.alignment=_al('left')
+    ws.row_dimensions[4].height=18; ws.row_dimensions[5].height=10
+
+    # 종합 요약
+    ws.merge_cells('A6:L6'); c=ws.cell(row=6,column=1,value=f'📌  종합 : {one_line}')
+    c.font=Font(bold=True,size=11,color=C_WHITE,name='Arial')
+    c.fill=_fill('CC2200'); c.alignment=_al('left',wrap=True)
+    ws.row_dimensions[6].height=36; ws.row_dimensions[7].height=10
+
+    # 키워드 분석 테이블
+    _sec(ws,8,1,12,'🔍 키워드별 상세 여론 분석',bg=C_MID)
+    h2=9; ws.row_dimensions[h2].height=22
+    for (c1,c2),lbl in [((1,1),'순위'),((2,3),'키워드'),((4,4),'감성'),
+                         ((5,5),'언급량'),((6,9),'핵심 요약'),((10,12),'대표 예시')]:
+        _mw(ws,h2,c1,h2,c2,lbl,bold=True,sz=10,fg=C_WHITE,bg=C_MID,h='center')
+    drow=10
+    for i,(lbl,d) in enumerate(ns,1):
+        if d['count']==0: continue
+        ex = '  /  '.join([f'"{e}"' for e in d['examples']]) or '-'
+        ws.row_dimensions[drow].height=48
+        _mw(ws,drow,1,drow,1,f'🔴 {i}위',bold=True,sz=11,fg=C_WHITE,bg=C_RED,h='center',v='center')
+        _mw(ws,drow,2,drow,3,lbl,bold=True,sz=10,fg=C_RED,bg='FFF0F0',h='center',v='center',wrap=True)
+        _mw(ws,drow,4,drow,4,'🔴 부정',bold=True,sz=9,fg=C_RED,bg='FFF0F0',h='center',v='center')
+        _mw(ws,drow,5,drow,5,f'{d["count"]:,}건',sz=9,fg='444444',bg='FFF0F0',h='center',v='center')
+        _mw(ws,drow,6,drow,9,f'부정 게시글 중 {d["count"]:,}건에서 언급. {lbl} 관련 불만 주요 이슈.',sz=9,fg='222222',bg='FFF0F0',h='left',v='center',wrap=True)
+        _mw(ws,drow,10,drow,12,ex,sz=9,fg='555555',bg='FFF0F0',h='left',v='center',wrap=True,it=True)
+        drow+=1
+    for i,(lbl,d) in enumerate(ps,1):
+        if d['count']==0: continue
+        ex = '  /  '.join([f'"{e}"' for e in d['examples']]) or '-'
+        ws.row_dimensions[drow].height=48
+        _mw(ws,drow,1,drow,1,f'🟢 {i}위',bold=True,sz=11,fg=C_WHITE,bg=C_GREEN,h='center',v='center')
+        _mw(ws,drow,2,drow,3,lbl,bold=True,sz=10,fg=C_GREEN,bg='F0FFF4',h='center',v='center',wrap=True)
+        _mw(ws,drow,4,drow,4,'🟢 긍정',bold=True,sz=9,fg=C_GREEN,bg='F0FFF4',h='center',v='center')
+        _mw(ws,drow,5,drow,5,f'{d["count"]:,}건',sz=9,fg='444444',bg='F0FFF4',h='center',v='center')
+        _mw(ws,drow,6,drow,9,f'긍정 게시글 중 {d["count"]:,}건에서 언급. {lbl} 관련 만족도 높음.',sz=9,fg='222222',bg='F0FFF4',h='left',v='center',wrap=True)
+        _mw(ws,drow,10,drow,12,ex,sz=9,fg='555555',bg='F0FFF4',h='left',v='center',wrap=True,it=True)
+        drow+=1
+    _cw(ws,{'A':8,'B':14,'C':14,'D':10,'E':10,'F':14,'G':14,'H':14,'I':14,'J':16,'K':16,'L':16})
+
+def mk_dc_timeline(ws, df):
+    '''이슈 타임라인 시트 — 날짜별 게시글 급등 구간'''
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells('A1:J1'); c=ws['A1']
+    c.value = '📅  이슈 타임라인 — 날짜별 게시글 급등 구간'
+    c.font=Font(bold=True,size=15,color=C_WHITE,name='Arial')
+    c.fill=_fill('CC2200'); c.alignment=_al(); ws.row_dimensions[1].height=30
+    ws.row_dimensions[2].height=8
+
+    # 날짜별 집계
+    daily = df.groupby('작성일').agg(
+        total=('번호','count'),
+        pos=('감성', lambda x:(x=='pos').sum()),
+        neg=('감성', lambda x:(x=='neg').sum()),
+        avg_like=('추천수','mean'),
+    ).reset_index().sort_values('작성일')
+
+    if len(daily) == 0:
+        _w(ws,3,1,'데이터 없음',sz=10,bg=C_LIGHT)
+        return
+
+    # 평균 대비 2배 이상 = 급등
+    avg_total = daily['total'].mean()
+    _hr(ws,3,['날짜','총 게시글','긍정','부정','평균추천','이슈 여부','','','',''],bg=C_MID)
+    for i,r in enumerate(daily.itertuples(),4):
+        is_spike = r.total >= avg_total * 1.8
+        bg = 'FFEECC' if is_spike else (C_LIGHT if i%2==0 else C_WHITE)
+        ws.row_dimensions[i].height=18
+        _w(ws,i,1,r.작성일,sz=9,bg=bg,h='center')
+        _w(ws,i,2,r.total,sz=9,bg=bg,h='center')
+        _w(ws,i,3,int(r.pos),sz=9,fg=C_GREEN,bg=bg,h='center')
+        _w(ws,i,4,int(r.neg),sz=9,fg=C_RED,bg=bg,h='center')
+        _w(ws,i,5,round(r.avg_like,1),sz=9,bg=bg,h='center')
+        spike_txt = '🔥 급등' if is_spike else ''
+        _w(ws,i,6,spike_txt,bold=is_spike,sz=9,fg='CC2200',bg=bg,h='center')
+    _cw(ws,{'A':14,'B':12,'C':10,'D':10,'E':12,'F':10,'G':8,'H':8,'I':8,'J':8})
+
+def mk_dc_comment_vs_post(ws, df, cmt_pos, cmt_neg):
+    '''댓글 vs 게시글 여론 비교 시트'''
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells('A1:H1'); c=ws['A1']
+    c.value = '💬  댓글 vs 게시글 여론 비교'
+    c.font=Font(bold=True,size=15,color=C_WHITE,name='Arial')
+    c.fill=_fill('CC2200'); c.alignment=_al(); ws.row_dimensions[1].height=30
+    ws.row_dimensions[2].height=8
+
+    post_pos = len(df[df['감성']=='pos']); post_neg = len(df[df['감성']=='neg'])
+    post_total = len(df)
+    cmt_total = len(cmt_pos) + len(cmt_neg)
+
+    _sec(ws,3,1,8,'📊 채널별 긍부정 비율 비교',bg='CC2200')
+    _hr(ws,4,['채널','총수','긍정수','부정수','긍정률(%)','부정률(%)','',''],bg=C_MID)
+    rows_data = [
+        ('📝 게시글', post_total, post_pos, post_neg,
+         round(post_pos/post_total*100,1) if post_total else 0,
+         round(post_neg/post_total*100,1) if post_total else 0),
+        ('💬 댓글', cmt_total, len(cmt_pos), len(cmt_neg),
+         round(len(cmt_pos)/cmt_total*100,1) if cmt_total else 0,
+         round(len(cmt_neg)/cmt_total*100,1) if cmt_total else 0),
+    ]
+    for i,(ch,tot,p,n,pr,nr) in enumerate(rows_data,5):
+        bg = C_LIGHT if i%2==0 else C_WHITE
+        ws.row_dimensions[i].height=24
+        for j,v in enumerate([ch,tot,p,n,f'{pr}%',f'{nr}%'],1):
+            fg = C_GREEN if j==3 else (C_RED if j==4 else '000000')
+            _w(ws,i,j,v,sz=11,fg=fg,bg=bg,h='center',bold=(j in [3,4]))
+
+    ws.row_dimensions[7].height=14
+    # 댓글 대표 예시
+    _sec(ws,8,1,8,'💬 부정 댓글 예시 TOP 10',bg=C_RED)
+    _hr(ws,9,['#','내용','','','','','',''],bg=C_MID)
+    for i,txt in enumerate(cmt_neg[:10],10):
+        bg = C_LRED if i%2==0 else C_WHITE; ws.row_dimensions[i].height=20
+        _w(ws,i,1,f'{i-9}',sz=9,bg=bg,h='center')
+        ws.merge_cells(start_row=i,start_column=2,end_row=i,end_column=8)
+        _w(ws,i,2,txt[:100],sz=9,bg=bg,h='left',wrap=True)
+
+    ws.row_dimensions[20].height=14
+    _sec(ws,21,1,8,'💬 긍정 댓글 예시 TOP 10',bg=C_GREEN)
+    _hr(ws,22,['#','내용','','','','','',''],bg=C_MID)
+    for i,txt in enumerate(cmt_pos[:10],23):
+        bg = C_LGREEN if i%2==0 else C_WHITE; ws.row_dimensions[i].height=20
+        _w(ws,i,1,f'{i-22}',sz=9,bg=bg,h='center')
+        ws.merge_cells(start_row=i,start_column=2,end_row=i,end_column=8)
+        _w(ws,i,2,txt[:100],sz=9,bg=bg,h='left',wrap=True)
+    _cw(ws,{'A':6,'B':50,'C':10,'D':10,'E':10,'F':10,'G':10,'H':10})
+
+def mk_dc_raw(ws, df):
+    '''전체 게시글 원본 시트'''
+    ws.sheet_view.showGridLines = False; ws.freeze_panes='A2'
+    cols=['번호','감성','제목','내용','작성일','작성월','조회수','추천수','비추천수','댓글수']
+    _hr(ws,1,cols,height=20)
+    for i,(_,r) in enumerate(df.iterrows(),2):
+        is_pos = r.get('감성','') == 'pos'
+        is_neg = r.get('감성','') == 'neg'
+        bg = C_LGREEN if is_pos else (C_LRED if is_neg else C_LIGHT)
+        ws.row_dimensions[i].height=14
+        vals = [r.get('번호',''), r.get('감성',''), str(r.get('제목',''))[:60],
+                str(r.get('내용',''))[:100], r.get('작성일',''), r.get('작성월',''),
+                r.get('조회수',0), r.get('추천수',0), r.get('비추천수',0), r.get('댓글수',0)]
+        for j,v in enumerate(vals,1):
+            c=ws.cell(row=i,column=j,value=v)
+            c.fill=_fill(bg); c.border=_bd(); c.font=Font(size=9,name='Arial')
+            c.alignment=_al('left','center',wrap=(j in [3,4]))
+    ws.auto_filter.ref=f'A1:{get_column_letter(len(cols))}1'
+    _cw(ws,{'A':8,'B':8,'C':40,'D':45,'E':12,'F':10,'G':10,'H':10,'I':10,'J':10})
+
+def mk_dc_criteria(ws):
+    '''디시 분석 기준 시트'''
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells('A1:F1'); c=ws['A1']
+    c.value = '📐 디시인사이드 분석 기준'
+    c.font=Font(bold=True,size=15,color=C_WHITE,name='Arial')
+    c.fill=_fill('CC2200'); c.alignment=_al(); ws.row_dimensions[1].height=32
+    ws.row_dimensions[2].height=10
+
+    _sec(ws,3,1,6,'⭐ 감성 분류 기준',bg='CC2200')
+    _hr(ws,4,['구분','기준','설명','','',''],bg=C_MID)
+    criteria = [
+        ('분류 방식','추천수 30% + 텍스트 70%','추천/비추천수와 게시글 내용 텍스트 조합으로 감성 분류'),
+        ('긍정','combined > +0.5','긍정 키워드 多, 추천수 높음 → 긍정 게시글'),
+        ('부정','combined < -0.5','부정 키워드 多, 비추천 또는 불만 내용 → 부정 게시글'),
+        ('중립','-0.5 ~ +0.5','판단 어려움 또는 혼재'),
+        ('댓글 분류','텍스트 100%','댓글은 추천수 없으므로 텍스트만으로 분류'),
+        ('역접어 처리','한데/지만/근데 등','역접어 뒤 내용을 최종 감정으로 판단'),
+        ('부정어 조합','없어요/안/못/전혀 등','부정KW+부정어 → 긍정으로 재분류'),
+        ('급등 감지','평균 대비 1.8배 이상','이슈 타임라인에서 🔥 급등으로 표시'),
+    ]
+    for i,(a,b,c_txt) in enumerate(criteria,5):
+        bg = C_LIGHT if i%2==0 else C_WHITE; ws.row_dimensions[i].height=22
+        _w(ws,i,1,a,bold=True,sz=10,bg=bg,h='center')
+        _w(ws,i,2,b,sz=10,bg=bg,h='center')
+        ws.merge_cells(start_row=i,start_column=3,end_row=i,end_column=6)
+        _w(ws,i,3,c_txt,sz=10,bg=bg,h='left',wrap=True)
+    _cw(ws,{'A':18,'B':22,'C':35,'D':12,'E':12,'F':12})
+
+def gen_excel_bytes_dc(df, ns, ps, one_line, cmt_pos, cmt_neg):
+    '''디시인사이드 전용 엑셀 생성'''
+    wb = Workbook()
+    ws1=wb.active; ws1.title='📊 대시보드'
+    mk_dc_dashboard(ws1, df, ns, ps, one_line)
+    ws2=wb.create_sheet('🔥 화제글 TOP10')
+    mk_dc_hot_posts(ws2, df)
+    ws3=wb.create_sheet('🗣️ 여론분석')
+    mk_dc_opinion(ws3, df, ns, ps, one_line, cmt_pos, cmt_neg)
+    ws4=wb.create_sheet('📅 이슈 타임라인')
+    mk_dc_timeline(ws4, df)
+    ws5=wb.create_sheet('💬 댓글 vs 게시글')
+    mk_dc_comment_vs_post(ws5, df, cmt_pos, cmt_neg)
+    ws6=wb.create_sheet('📋 전체 게시글')
+    mk_dc_raw(ws6, df)
+    ws7=wb.create_sheet('📐 분석기준')
+    mk_dc_criteria(ws7)
+    ws1.sheet_properties.tabColor='CC2200'
+    ws2.sheet_properties.tabColor='E74C3C'
+    ws3.sheet_properties.tabColor=C_GOLD
+    ws4.sheet_properties.tabColor=C_BLUE
+    ws5.sheet_properties.tabColor=C_ACCENT
+    ws6.sheet_properties.tabColor=C_GREEN
+    ws7.sheet_properties.tabColor='9B59B6'
+    buf=io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf.getvalue()
+
 def gen_csv_bytes(df, doc_lang='KR'):
     t = I18N[doc_lang]
     dk=['리뷰ID','사용자','평점','내용','작성일','작성월','좋아요','개발사답변','답변일','앱버전']
@@ -1735,7 +2369,14 @@ with st.sidebar:
     st.markdown('---')
     PATCH_NOTES = {
         'KR': '''
-**v2.9** *(현재 버전)*
+**v3.0** *(현재 버전)*
+- 🔥 디시인사이드 마이너 갤러리 분석 추가
+  - 게시글 + 댓글 수집
+  - 키워드 필터
+  - 이슈 타임라인 시트
+  - 댓글 vs 게시글 여론 비교
+
+**v2.9**
 - ☁️ 워드클라우드 시각화 추가
 - 🌏 영어/중국어(번체) 감성사전 추가
 - 🧹 이상 리뷰 자동 필터링 추가
@@ -1771,7 +2412,10 @@ with st.sidebar:
 - 📋 패치 노트 UI 추가
         ''',
         'JP': '''
-**v2.9** *(現在バージョン)*
+**v3.0** *(現在バージョン)*
+- 🔥 DCインサイドギャラリー分析追加
+
+**v2.9**
 - ☁️ ワードクラウド可視化追加
 - 🌏 英語/中国語(繁体)感情辞書追加
 - 🧹 異常レビュー自動フィルタリング追加
@@ -1816,16 +2460,20 @@ st.markdown('---')
 # 플랫폼 선택
 platform = st.radio(
     t['platform_label'],
-    [t['platform_gp'], t['platform_as'], t['platform_st']],
+    [t['platform_gp'], t['platform_as'], t['platform_st'], t['platform_dc']],
     horizontal=True
 )
 is_appstore = (platform == t['platform_as'])
 is_steam    = (platform == t['platform_st'])
+is_dc       = (platform == t['platform_dc'])
 
 if is_appstore:
     url_input = st.text_input(t['url_label'], placeholder=t['appstore_url_ph'])
 elif is_steam:
     url_input = st.text_input(t['url_label'], placeholder=t['steam_url_ph'])
+elif is_dc:
+    url_input = st.text_input(t['url_label'], placeholder=t['dc_url_ph'])
+    dc_keyword = st.text_input(t['dc_keyword_label'], placeholder=t['dc_keyword_ph'])
 else:
     url_input = st.text_input(t['url_label'], placeholder=t['url_ph'])
 
@@ -1842,9 +2490,12 @@ with col2:
 
 col3, _ = st.columns(2)
 with col3:
-    region_options = [t['region_KR'],t['region_JP'],t['region_US'],t['region_TW'],t['region_GB']]
-    region_sel  = st.selectbox(t['region_label'], region_options)
-    region_code = region_sel[:2]
+    if not is_dc:
+        region_options = [t['region_KR'],t['region_JP'],t['region_US'],t['region_TW'],t['region_GB']]
+        region_sel  = st.selectbox(t['region_label'], region_options)
+        region_code = region_sel[:2]
+    else:
+        region_code = 'KR'
 
 if is_appstore:
     if ui_code == 'KR':
@@ -1853,6 +2504,8 @@ if is_appstore:
         st.info('🍎 App Storeモード — URLまたは数字IDを入力してください。\n\n⚠️ Apple RSS APIの制限により、最大 **500件** まで収集可能です。')
 elif is_steam:
     st.info(t['steam_notice'])
+elif is_dc:
+    st.info(t['dc_notice'])
 
 st.markdown('---')
 btn_start = st.button(t['btn_start'], use_container_width=True)
@@ -1877,9 +2530,74 @@ if btn_start:
     prog = progress_bar.progress(0, text=t['prog_collect'])
 
     # ══════════════════════════
+    # 🔥 디시인사이드 수집
+    # ══════════════════════════
+    if is_dc:
+        import random as _random, time as _time
+        dc_id = parse_dc_id(url_input)
+        if not dc_id: st.error(t['err_no_dcid']); st.stop()
+        kw = dc_keyword.strip() if 'dc_keyword' in dir() else ''
+        add_log(f'🔥 디시 수집 시작 | 갤러리: {dc_id} | 키워드: {kw or "전체"} | 목표: {target if is_count_mode else "기간"}')
+        prog.progress(5, text=t['prog_collect'])
+
+        try:
+            posts, err = fetch_dc_posts(
+                dc_id, how_many=target, keyword=kw,
+                mode='count' if is_count_mode else 'period',
+                dt_from=dt_from_dt if not is_count_mode else None,
+                dt_to=dt_to_dt if not is_count_mode else None,
+            )
+        except Exception as e:
+            st.error(f'❌ 수집 실패: {e}'); st.stop()
+
+        if err: st.error(err); st.stop()
+        add_log(f'📝 게시글 {len(posts):,}건 수집 완료')
+
+        # 본문 + 댓글 수집
+        all_comments = []
+        for idx, post in enumerate(posts):
+            try:
+                content_txt, cmts, likes, dislikes = fetch_dc_post_detail(post['url'])
+                posts[idx]['content'] = content_txt
+                posts[idx]['dislikes'] = dislikes
+                posts[idx]['likes'] = max(post.get('likes',0), likes)
+                all_comments.extend(cmts)
+                prog.progress(min(5 + int(idx/len(posts)*60), 65), text=f'📄 본문 수집 중... {idx+1}/{len(posts)}')
+                _time.sleep(_random.uniform(3.0, 5.0))
+            except Exception:
+                continue
+
+        add_log(f'💬 댓글 {len(all_comments):,}건 수집 완료')
+        if not posts: st.error(t['err_no_data']); st.stop()
+
+        prog.progress(70, text='📊 여론 분석 중...')
+        df = build_df_dc(posts)
+        df, ns, ps, one_line, cmt_pos, cmt_neg = analyze_dc(df, all_comments, t)
+
+        prog.progress(85, text=t['prog_excel'])
+        add_log(t['log_excel'])
+        excel_bytes = gen_excel_bytes_dc(df, ns, ps, one_line, cmt_pos, cmt_neg)
+        prog.progress(100, text=t['prog_done'])
+        add_log(t['log_finish'])
+
+        date_str = datetime.now().strftime('%y%m%d')
+        fname_base = f'dcinside_{dc_id}_{date_str}'
+        st.session_state['_region_code'] = 'KR'
+        st.session_state['result'] = {
+            'df': df, 'excel_bytes': excel_bytes,
+            'csv_bytes': None,
+            'fname_base': fname_base,
+            'avg': 0,
+            'pos': int((df['감성']=='pos').sum()),
+            'neg': int((df['감성']=='neg').sum()),
+            'total': len(df),
+            'is_dc': True,
+        }
+
+    # ══════════════════════════
     # 🎮 스팀 수집
     # ══════════════════════════
-    if is_steam:
+    elif is_steam:
         steam_id = parse_steam_id(url_input)
         if not steam_id: st.error(t['err_no_steamid']); st.stop()
         lang_st = STEAM_LANGS.get(region_code, 'koreana')
@@ -2055,7 +2773,13 @@ if 'result' in st.session_state:
     st.markdown(f'### {t["result_title"]}')
     m1,m2,m3,m4 = st.columns(4)
     m1.metric(t['metric_total'], f'{r["total"]:,}{t["unit_count"]}')
-    if r.get('is_steam'):
+    if r.get('is_dc'):
+        pos_rate = r["pos"]/r["total"]*100 if r["total"] else 0
+        neg_rate = r["neg"]/r["total"]*100 if r["total"] else 0
+        m2.metric('🟢 긍정 게시글', f'{r["pos"]:,}{t["unit_count"]} ({pos_rate:.1f}%)')
+        m3.metric('🔴 부정 게시글', f'{r["neg"]:,}{t["unit_count"]} ({neg_rate:.1f}%)')
+        m4.metric('📝 총 게시글', f'{r["total"]:,}{t["unit_count"]}')
+    elif r.get('is_steam'):
         rec_rate = r["pos"]/r["total"]*100 if r["total"] else 0
         m2.metric('👍 추천률' if ui_code=='KR' else '👍 推薦率', f'{rec_rate:.1f}%')
         m3.metric('👍 추천' if ui_code=='KR' else '👍 推薦', f'{r["pos"]:,}{t["unit_count"]}')
@@ -2064,14 +2788,20 @@ if 'result' in st.session_state:
         m2.metric(t['metric_avg'],   f'{r["avg"]:.2f} ★')
         m3.metric(t['metric_pos'],   f'{r["pos"]:,}{t["unit_count"]} ({r["pos"]/r["total"]*100:.1f}%)')
         m4.metric(t['metric_neg'],   f'{r["neg"]:,}{t["unit_count"]} ({r["neg"]/r["total"]*100:.1f}%)')
-    dl1, dl2 = st.columns(2)
-    with dl1:
+    if r.get('is_dc'):
         st.download_button(label=t['btn_dl'], data=r['excel_bytes'],
             file_name=f'{r["fname_base"]}.xlsx',
             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             use_container_width=True)
-    with dl2:
-        st.download_button(label=t['btn_csv'], data=r['csv_bytes'],
-            file_name=f'{r["fname_base"]}.csv',
-            mime='text/csv',
-            use_container_width=True)
+    else:
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.download_button(label=t['btn_dl'], data=r['excel_bytes'],
+                file_name=f'{r["fname_base"]}.xlsx',
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                use_container_width=True)
+        with dl2:
+            st.download_button(label=t['btn_csv'], data=r['csv_bytes'],
+                file_name=f'{r["fname_base"]}.csv',
+                mime='text/csv',
+                use_container_width=True)
