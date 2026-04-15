@@ -21,6 +21,15 @@ except ImportError:
     HAS_APP_STORE = False
 
 try:
+    from wordcloud import WordCloud
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    HAS_WORDCLOUD = True
+except ImportError:
+    HAS_WORDCLOUD = False
+
+try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.chart import BarChart, PieChart, LineChart, Reference
@@ -575,9 +584,20 @@ def analyze_kw(df, t):
             res[lbl]={'count':c,'examples':ex_final}
         return res
 
+    # 다국어 감성사전 적용 (#6)
+    # session_state에서 region_code 참조
+    _region = st.session_state.get('_region_code', 'KR')
+    _en_neg, _en_pos = get_kw_dicts_by_region(_region, '')
+    if _en_neg:
+        neg_kw_use = _en_neg
+        pos_kw_use = _en_pos
+    else:
+        neg_kw_use = t['neg_kw']
+        pos_kw_use = t['pos_kw']
+
     used_neg=set(); used_pos=set()
-    nr=cnt_neg(neg_tx, t['neg_kw'], used_neg)
-    pr=cnt_pos(pos_tx, t['pos_kw'], used_pos)
+    nr=cnt_neg(neg_tx, neg_kw_use, used_neg)
+    pr=cnt_pos(pos_tx, pos_kw_use, used_pos)
     ns=sorted(nr.items(), key=lambda x:x[1]['count'], reverse=True)
     ps=sorted(pr.items(), key=lambda x:x[1]['count'], reverse=True)
 
@@ -1150,8 +1170,181 @@ def gen_excel_bytes(df, doc_lang, is_steam=False):
     ws3.sheet_properties.tabColor=C_GREEN
     ws4.sheet_properties.tabColor=C_BLUE
     ws5.sheet_properties.tabColor='9B59B6'
+    # 워드클라우드 시트 추가
+    if HAS_WORDCLOUD:
+        sh_wc = '☁️ 워드클라우드' if doc_lang=='KR' else '☁️ ワードクラウド'
+        ws6 = wb.create_sheet(sh_wc)
+        ws6.sheet_view.showGridLines = False
+        ws6.merge_cells('A1:N1'); c=ws6['A1']
+        c.value = '☁️  키워드 워드클라우드' if doc_lang=='KR' else '☁️  キーワードワードクラウド'
+        c.font=Font(bold=True,size=15,color=C_WHITE,name='Arial')
+        c.fill=_fill(C_DARK); c.alignment=_al(); ws6.row_dimensions[1].height=32
+        ws6.row_dimensions[2].height=10
+        # 부정 워드클라우드
+        _sec(ws6,3,1,7,'🔴 부정 리뷰 키워드' if doc_lang=='KR' else '🔴 否定レビューキーワード',bg=C_RED)
+        neg_wc = gen_wordcloud_image(df, is_neg=True)
+        if neg_wc:
+            insert_wordcloud_to_excel(ws6, neg_wc, 'A4')
+        # 긍정 워드클라우드
+        _sec(ws6,3,8,14,'🟢 긍정 리뷰 키워드' if doc_lang=='KR' else '🟢 肯定レビューキーワード',bg=C_GREEN)
+        pos_wc = gen_wordcloud_image(df, is_neg=False)
+        if pos_wc:
+            insert_wordcloud_to_excel(ws6, pos_wc, 'H4')
+        ws6.sheet_properties.tabColor='3498DB'
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.getvalue()
+
+# ══════════════════════════════════════════
+# 이상 리뷰 감지 및 필터링 (#8)
+# ══════════════════════════════════════════
+def filter_abnormal_reviews(df):
+    '''의미없는 단어로만 구성된 리뷰 필터링'''
+    def is_abnormal(text):
+        if pd.isna(text) or str(text).strip() == '':
+            return True
+        t = str(text).strip()
+        # 5글자 미만 단순 감탄사
+        if len(t) <= 3:
+            return True
+        # 동일 문자 반복 (ㅋㅋㅋㅋ, ㅎㅎㅎㅎ, ....., !!!! 등)
+        unique_chars = set(t.replace(' ',''))
+        if len(unique_chars) <= 2 and len(t) >= 4:
+            return True
+        # 의미없는 단순 패턴
+        meaningless = ['ㅇㅇ','ㄱㄱ','ㄴㄴ','ㅠㅠ','ㅜㅜ','ㅋㅋ','ㅎㅎ',
+                       '굿','굳','good','gud','ok','okay','👍','👎',
+                       '..','...','....','!!','!!!']
+        if t.lower() in [m.lower() for m in meaningless]:
+            return True
+        return False
+
+    before = len(df)
+    df_filtered = df[~df['내용'].apply(is_abnormal)].copy()
+    after = len(df_filtered)
+    removed = before - after
+    return df_filtered, removed
+
+# ══════════════════════════════════════════
+# 워드클라우드 생성 (#3)
+# ══════════════════════════════════════════
+def gen_wordcloud_image(df, region_code='KR', is_neg=True):
+    '''워드클라우드 이미지 생성 → bytes 반환'''
+    if not HAS_WORDCLOUD:
+        return None
+    try:
+        import urllib.request, os, tempfile
+        # 감성 기준으로 텍스트 분리
+        if is_neg:
+            texts = df[df['평점'] <= 2]['내용'].dropna().tolist()
+        else:
+            texts = df[df['평점'] >= 4]['내용'].dropna().tolist()
+
+        if not texts:
+            return None
+
+        text_all = ' '.join(texts)
+
+        # 불용어 (분석에 의미없는 단어)
+        stopwords = set([
+            '게임','이게','그게','이거','저거','그거','있어','없어','해요',
+            '해서','하고','하는','하면','되는','되어','이라','이런','그런',
+            '저런','같아','같은','같이','때문','정말','진짜','너무','매우',
+            '조금','좀더','더욱','아주','매우','이제','그냥','그래','그리고',
+            'the','and','for','this','that','with','have','from',
+        ])
+
+        # 폰트 경로 (Streamlit Cloud 환경)
+        font_candidates = [
+            '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+        ]
+        font_path = None
+        for fp in font_candidates:
+            if os.path.exists(fp):
+                font_path = fp
+                break
+
+        wc_kwargs = dict(
+            width=800, height=400,
+            background_color='white',
+            max_words=80,
+            stopwords=stopwords,
+            colormap='Reds' if is_neg else 'Greens',
+            prefer_horizontal=0.7,
+        )
+        if font_path:
+            wc_kwargs['font_path'] = font_path
+
+        wc = WordCloud(**wc_kwargs).generate(text_all)
+
+        buf = io.BytesIO()
+        plt.figure(figsize=(10, 5))
+        plt.imshow(wc, interpolation='bilinear')
+        plt.axis('off')
+        plt.tight_layout(pad=0)
+        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        plt.close()
+        buf.seek(0)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+def insert_wordcloud_to_excel(ws, img_bytes, anchor='A1'):
+    '''엑셀 시트에 워드클라우드 이미지 삽입'''
+    if not img_bytes:
+        return
+    try:
+        from openpyxl.drawing.image import Image as XLImage
+        buf = io.BytesIO(img_bytes)
+        img = XLImage(buf)
+        img.width = 600; img.height = 300
+        ws.add_image(img, anchor)
+    except Exception:
+        pass
+
+# ══════════════════════════════════════════
+# 다국어 감성사전 확장 (#6)
+# ══════════════════════════════════════════
+EN_NEG_KW = {
+    'Bug·Error'    : ['bug','error','crash','freeze','glitch','broken','lag'],
+    'Performance'  : ['laggy','slow','fps','optimization','heating','stutter'],
+    'Gacha·Pay'    : ['gacha','p2w','pay to win','expensive','overpriced','whale'],
+    'Balance'      : ['imbalanced','nerf','op','broken','unfair'],
+    'Operations'   : ['update','devs','support','abandoned','dead game'],
+    'Story·Content': ['boring','repetitive','short','lack of content'],
+}
+EN_POS_KW = {
+    'Graphics·Art' : ['beautiful','gorgeous','art','visual','stunning'],
+    'Gameplay'     : ['fun','addictive','smooth','satisfying','engaging'],
+    'Story'        : ['story','lore','immersive','emotional','deep'],
+    'F2P·Generous' : ['free','generous','f2p friendly','no pay wall'],
+    'Community'    : ['community','multiplayer','coop','friends'],
+}
+
+TW_NEG_KW = {
+    '錯誤·當機'    : ['bug','錯誤','當機','閃退','卡頓','lag'],
+    '最佳化·效能'  : ['lag','卡','優化','發熱','慢'],
+    '抽卡·課金'    : ['課金','抽卡','機率','天井','貴','氪金'],
+    '平衡'         : ['不平衡','削弱','外掛','作弊'],
+    '營運'         : ['更新','營運','廢棄','死遊戲'],
+    '故事·內容'    : ['無聊','重複','內容不足'],
+}
+TW_POS_KW = {
+    '畫面·美術'    : ['美','畫質','美術','精緻'],
+    '遊戲性'       : ['好玩','有趣','上癮','爽'],
+    '故事'         : ['劇情','故事','感動','沉浸'],
+    '課金友善'     : ['不課金','免費','佛心','慷慨'],
+    '社群'         : ['多人','朋友','公會','一起玩'],
+}
+
+def get_kw_dicts_by_region(region_code, lang_code):
+    '''수집 국가에 맞는 키워드 사전 반환'''
+    if region_code == 'US' or lang_code == 'en':
+        return EN_NEG_KW, EN_POS_KW
+    elif region_code == 'TW' or lang_code == 'zh_TW':
+        return TW_NEG_KW, TW_POS_KW
+    return None, None  # KR/JP는 기존 I18N 사전 사용
 
 def gen_csv_bytes(df, doc_lang='KR'):
     t = I18N[doc_lang]
@@ -1514,7 +1707,12 @@ with st.sidebar:
     st.markdown('---')
     PATCH_NOTES = {
         'KR': '''
-**v2.8** *(현재 버전)*
+**v2.9** *(현재 버전)*
+- ☁️ 워드클라우드 시각화 추가
+- 🌏 영어/중국어(번체) 감성사전 추가
+- 🧹 이상 리뷰 자동 필터링 추가
+
+**v2.8**
 - 🎮 스팀(Steam) 리뷰 수집 지원 추가
 - 📐 스팀 전용 분석 기준 시트 추가
 
@@ -1545,7 +1743,12 @@ with st.sidebar:
 - 📋 패치 노트 UI 추가
         ''',
         'JP': '''
-**v2.8** *(現在バージョン)*
+**v2.9** *(現在バージョン)*
+- ☁️ ワードクラウド可視化追加
+- 🌏 英語/中国語(繁体)感情辞書追加
+- 🧹 異常レビュー自動フィルタリング追加
+
+**v2.8**
 - 🎮 Steam レビュー収集対応
 - 📐 Steam専用分析基準シート追加
 
@@ -1668,7 +1871,10 @@ if btn_start:
         if not raw_reviews: st.error(t['err_no_data']); st.stop()
         prog.progress(80, text=t['prog_excel'])
         add_log(t['log_excel'])
-        df = build_df_steam(raw_reviews)
+        df_raw = build_df_steam(raw_reviews)
+        df, removed = filter_abnormal_reviews(df_raw)
+        if removed > 0:
+            add_log(f'🧹 이상 리뷰 {removed:,}건 제외 (총 {len(df):,}건 분석)')
         fname_prefix = f'steam_{steam_id}'
         excel_bytes = gen_excel_bytes(df, doc_code, is_steam=True)
         prog.progress(100, text=t['prog_done'])
@@ -1720,7 +1926,10 @@ if btn_start:
         if not raw_reviews: st.error(t['err_no_data']); st.stop()
         prog.progress(80, text=t['prog_excel'])
         add_log(t['log_excel'])
-        df = build_df_appstore(raw_reviews)
+        df_raw = build_df_appstore(raw_reviews)
+        df, removed = filter_abnormal_reviews(df_raw)
+        if removed > 0:
+            add_log(f'🧹 이상 리뷰 {removed:,}건 제외 (총 {len(df):,}건 분석)')
         fname_prefix = f'appstore_{as_id}'
 
     # ══════════════════════════════
@@ -1793,7 +2002,10 @@ if btn_start:
 
         prog.progress(85, text=t['prog_excel'])
         add_log(t['log_excel'])
-        df = build_df(all_r)
+        df_raw = build_df(all_r)
+        df, removed = filter_abnormal_reviews(df_raw)
+        if removed > 0:
+            add_log(f'🧹 이상 리뷰 {removed:,}건 제외 (총 {len(df):,}건 분석)')
         fname_prefix = app_id.split('.')[-1]
 
     excel_bytes = gen_excel_bytes(df, doc_code)
@@ -1805,6 +2017,7 @@ if btn_start:
     market_name = 'AppStore' if is_appstore else 'GooglePlay'
     date_str = datetime.now().strftime('%y%m%d')
     fname_base = f'{fname_prefix}_{region_code}_{market_name}_{date_str}'
+    st.session_state['_region_code'] = region_code
     st.session_state['result'] = {
         'df': df,
         'excel_bytes': excel_bytes,
