@@ -1408,12 +1408,17 @@ def fetch_dc_posts(gall_id, how_many=300, keyword='',
         return [], '❌ beautifulsoup4 라이브러리가 필요합니다.'
 
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Referer': 'https://gall.dcinside.com',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
     }
 
     all_posts = []; page = 1; stop = False
 
+    errors = []
     while not stop:
         try:
             # 키워드 검색 or 전체 목록
@@ -1429,13 +1434,25 @@ def fetch_dc_posts(gall_id, how_many=300, keyword='',
 
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=15) as r:
+                status = r.status
                 html = r.read().decode('utf-8', errors='ignore')
+
+            # 차단 감지
+            if '차단' in html or 'blocked' in html.lower() or len(html) < 500:
+                return [], f'❌ 디시인사이드 접근 차단됨 (페이지 {page}, HTML 길이: {len(html)})'
 
             soup = BeautifulSoup(html, 'html.parser')
             rows = soup.select('tr.ub-content')
 
             if not rows:
-                break
+                # 첫 페이지인데 rows가 0이면 구조 문제
+                if page == 1:
+                    # 대안 선택자 시도
+                    rows = soup.select('tr[class*="ub"]')
+                    if not rows:
+                        return [], f'❌ 게시글을 찾을 수 없음 (선택자 불일치). HTML 길이: {len(html)}'
+                else:
+                    break
 
             for row in rows:
                 try:
@@ -2567,7 +2584,10 @@ if btn_start:
         except Exception as e:
             st.error(f'❌ 수집 실패: {e}'); st.stop()
 
-        if err: st.error(err); st.stop()
+        if err:
+            st.error(err)
+            add_log(f'❌ 오류: {err}')
+            st.stop()
         add_log(f'📝 게시글 {len(posts):,}건 수집 완료')
 
         # 본문 + 댓글 수집
