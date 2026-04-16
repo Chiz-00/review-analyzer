@@ -1439,20 +1439,39 @@ def fetch_dc_posts(gall_id, how_many=300, keyword='',
 
             for row in rows:
                 try:
-                    # 공지/광고 제외
-                    if row.select_one('.icon_notice') or row.select_one('.icon_ad'):
-                        continue
+                    # 공지/광고 제외 — 아이콘 위치 수정 (a 태그 안에 있음)
+                    if row.select_one('.icon_notice'): continue
+                    if row.select_one('.icon_ad'):     continue
+                    # gall_subject에 텍스트로 공지/설문 표시되는 경우도 제외
+                    subj_el = row.select_one('td.gall_subject')
+                    if subj_el:
+                        subj_txt = subj_el.get_text(strip=True)
+                        if subj_txt in ['공지','설문','AD','광고']: continue
 
-                    title_el = row.select_one('.gall_tit a')
+                    # 제목 — td.gall_tit 안의 첫 번째 a 태그
+                    tit_td = row.select_one('td.gall_tit')
+                    if not tit_td: continue
+                    title_el = tit_td.select_one('a')
                     if not title_el: continue
-                    title = title_el.get_text(strip=True)
+
+                    # 제목 텍스트 — b 태그 안에 있는 경우도 처리
+                    b_el = title_el.select_one('b')
+                    title = b_el.get_text(strip=True) if b_el else title_el.get_text(strip=True)
+                    if not title: continue
+
+                    # 링크
+                    href = title_el.get('href','')
+                    if not href or href.startswith('javascript'): continue
+                    post_url = f'https://gall.dcinside.com{href}' if href.startswith('/') else href
 
                     # 날짜
                     date_el = row.select_one('.gall_date')
-                    date_str = date_el['title'] if date_el and date_el.get('title') else (date_el.get_text(strip=True) if date_el else '')
+                    date_str = ''
+                    if date_el:
+                        date_str = date_el.get('title','') or date_el.get_text(strip=True)
                     try:
                         at = datetime.strptime(date_str[:10], '%Y-%m-%d')
-                    except:
+                    except Exception:
                         at = None
 
                     # 기간 필터
@@ -1461,16 +1480,14 @@ def fetch_dc_posts(gall_id, how_many=300, keyword='',
                         if at > dt_to: continue
 
                     # 조회수/추천수/댓글수
-                    view_el = row.select_one('.gall_count')
-                    like_el = row.select_one('.gall_recommend')
-                    cmt_el  = row.select_one('.reply_num')
-                    views   = int(view_el.get_text(strip=True).replace(',','')) if view_el else 0
-                    likes   = int(like_el.get_text(strip=True).replace(',','')) if like_el else 0
-                    cmts    = int(cmt_el.get_text(strip=True).strip('[]').replace(',','')) if cmt_el else 0
+                    def _safe_int(el):
+                        if not el: return 0
+                        try: return int(el.get_text(strip=True).strip('[]').replace(',',''))
+                        except: return 0
 
-                    # 게시글 URL
-                    href = title_el.get('href','')
-                    post_url = f'https://gall.dcinside.com{href}' if href.startswith('/') else href
+                    views = _safe_int(row.select_one('.gall_count'))
+                    likes = _safe_int(row.select_one('.gall_recommend'))
+                    cmts  = _safe_int(row.select_one('.reply_num'))
 
                     # 번호
                     num_el = row.select_one('.gall_num')
