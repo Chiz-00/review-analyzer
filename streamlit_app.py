@@ -549,11 +549,12 @@ def analyze_kw(df, t):
     df['감성분류'] = '중립'
     df.loc[pos_indices, '감성분류'] = '긍정'
     df.loc[neg_indices, '감성분류'] = '부정'
-    # idx → positional 변환 안전 처리
-    df = df.reset_index(drop=True)
 
+    # neg_tx/pos_tx는 reset 전 인덱스로 추출
     neg_tx = df.loc[neg_indices, '내용'].dropna()
     pos_tx = df.loc[pos_indices, '내용'].dropna()
+    # reset_index는 텍스트 추출 후에 수행
+    df = df.reset_index(drop=True)
     neg_total=len(neg_tx); pos_total=len(pos_tx)
     # ── 규칙 기반 감성분석 고도화 (#7)
     # 게임 슬랭 포함 확장 부정 표현 사전
