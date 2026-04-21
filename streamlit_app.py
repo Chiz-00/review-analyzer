@@ -319,7 +319,10 @@ def _al(h='center',v='center',wrap=False): return Alignment(horizontal=h,vertica
 def _bd():
     s=Side(style='thin',color=C_GRAY); return Border(left=s,right=s,top=s,bottom=s)
 def _w(ws,r,c,val,bold=False,sz=10,fg='000000',bg=None,h='left',v='center',wrap=False,b=True,it=False):
-    cell=ws.cell(row=r,column=c,value=val)
+    from openpyxl.cell.cell import MergedCell
+    cell=ws.cell(row=r,column=c)
+    if isinstance(cell, MergedCell): return cell  # 병합 셀은 건너뜀
+    cell.value=val
     cell.font=Font(bold=bold,size=sz,color=fg,name='Arial',italic=it)
     if bg: cell.fill=_fill(bg)
     cell.alignment=Alignment(horizontal=h,vertical=v,wrap_text=wrap)
