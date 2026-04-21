@@ -931,9 +931,11 @@ def mk_criteria(ws, t):
     neg_words_kr = ['없어요','없음','없네요','없다','안','못','안됨','안돼','노','전혀','하나도','거의','별로 안','전혀 안']
     neg_words_jp = ['ない','ず','ません','なし','全然','ほとんど','あまり','全く']
     neg_words = neg_words_kr if is_kr else neg_words_jp
-    ws.row_dimensions[row].height=30
+    ws.row_dimensions[row].height=22
     ws.merge_cells(start_row=row,start_column=1,end_row=row,end_column=6)
     _w(ws,row,1,'  /  '.join(neg_words),sz=10,bg=C_LIGHT,h='left',wrap=True)
+    row+=1
+    ws.row_dimensions[row].height=12  # 여백 행
 
     _cw(ws,{'A':20,'B':50,'C':15,'D':15,'E':15,'F':15})
 
