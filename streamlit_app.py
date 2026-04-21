@@ -801,8 +801,10 @@ def mk_opinion(ws, df, t, doc_lang):
 
 def mk_raw(ws, df, t):
     ws.sheet_view.showGridLines=False; ws.freeze_panes='A2'
+    is_kr = (t is I18N['KR'])
+    sent_label = '감성분류' if is_kr else '感情分類'
     cols=[t['c_id'],t['c_user'],t['c_score'],t['c_content'],t['c_date'],
-          t['c_month'],t['c_like'],t['c_reply'],t['c_rdate'],t['c_ver']]
+          t['c_month'],t['c_like'],t['c_reply'],t['c_rdate'],t['c_ver'],sent_label]
     dk=['리뷰ID','사용자','평점','내용','작성일','작성월','좋아요','개발사답변','답변일','앱버전']
     _hr(ws,1,cols,height=20)
     for i,row in enumerate(dataframe_to_rows(df[dk],index=False,header=False),2):
@@ -815,8 +817,18 @@ def mk_raw(ws, df, t):
             if j==3:
                 cc=C_GREEN if sc>=4 else (C_ORANGE if sc==3 else C_RED)
                 c.font=Font(bold=True,size=9,color=cc,name='Arial'); c.alignment=_al()
+        # K열 (11번째): 감성 분류 결과
+        if is_kr:
+            sent_val = '🟢 긍정' if sc>=4 else ('😐 중립' if sc==3 else '🔴 부정')
+        else:
+            sent_val = '🟢 肯定' if sc>=4 else ('😐 中立' if sc==3 else '🔴 否定')
+        sent_fg = C_GREEN if sc>=4 else (C_ORANGE if sc==3 else C_RED)
+        c=ws.cell(row=i,column=11,value=sent_val)
+        c.fill=_fill(bg); c.border=_bd()
+        c.font=Font(bold=True,size=9,color=sent_fg,name='Arial')
+        c.alignment=_al('center','center')
     ws.auto_filter.ref=f'A1:{get_column_letter(len(cols))}1'
-    _cw(ws,{'A':18,'B':12,'C':6,'D':50,'E':12,'F':10,'G':8,'H':35,'I':12,'J':10})
+    _cw(ws,{'A':18,'B':12,'C':6,'D':50,'E':12,'F':10,'G':8,'H':35,'I':12,'J':10,'K':10})
 
 def mk_stats(ws, df, t):
     ws.sheet_view.showGridLines=False
