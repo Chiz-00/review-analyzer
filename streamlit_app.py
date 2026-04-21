@@ -492,6 +492,9 @@ def analyze_kw(df, t):
             '짝퉁','먹통','저장안','초기화','발열','추억팔이','돈마블']
     _NEG3 = ['없어요','없음','없다','없어','안 ','안됨','안돼','못 ','전혀','하나도','별로없','안되는']
     _PNEG_CTX = ['까진 아니','은 아니','은 아님','는 아니','는 아님','이 아니']
+    # 미래 희망/바람 표현 — 현재 감성 아님 ("갓겜 되기를", "갓겜이 됐으면")
+    _FUTURE_CTX = ['되기를','됐으면','이면 좋겠','이길 바','이길바','됩니다만','되길','이 되어라',
+                   '되어줘','되어주길','가 됐으면','이 됐으면','로 발전','로 성장']
 
     def _classify_v3(text, rating):
         t = str(text).lower()
@@ -499,8 +502,9 @@ def analyze_kw(df, t):
         for k in _PS3:
             if k in t:
                 idx2 = t.find(k)
-                ctx = t[max(0,idx2-6):idx2+len(k)+10]
-                if any(p in ctx for p in _PNEG_CTX): continue
+                ctx = t[max(0,idx2-6):idx2+len(k)+15]
+                if any(p in ctx for p in _PNEG_CTX): continue   # 부정 문맥 무효화
+                if any(p in ctx for p in _FUTURE_CTX): continue  # 미래 희망 무효화
                 ps += 1
         ns = sum(1 for k in _NS3 if k in t)
         pn = sum(1 for k in _PN3 if k in t)
