@@ -432,17 +432,26 @@ def analyze_kw(df, t):
         return combined
 
     # 조합 점수 기반 버킷 분류
-    all_texts = df['내용'].dropna()
     neg_indices = []
     pos_indices = []
+    neu_indices = []
     for idx, row in df.iterrows():
         if pd.isna(row['내용']) or str(row['내용']).strip() == '':
+            neu_indices.append(idx)
             continue
         score = _quick_score(row['내용'], row['평점'])
         if score < -0.3:
             neg_indices.append(idx)
         elif score > 0.3:
             pos_indices.append(idx)
+        else:
+            neu_indices.append(idx)
+
+    # 리뷰별 감성분류 결과를 df에 저장 (전체리뷰 K열에 사용)
+    df = df.copy()
+    df['감성분류'] = '중립'
+    df.loc[pos_indices, '감성분류'] = '긍정'
+    df.loc[neg_indices, '감성분류'] = '부정'
 
     neg_tx = df.loc[neg_indices, '내용'].dropna()
     pos_tx = df.loc[pos_indices, '내용'].dropna()
@@ -633,7 +642,7 @@ def analyze_kw(df, t):
     elif pos_r>0.4: mood=t['mood_mix'].format(pos_r*100, neg_r*100)
     else:           mood=t['mood_neg'].format(neg_r*100)
     one=t['one_line_fmt'].format(top_pos, top_neg, avg, mood)
-    return rows, one, ns, ps
+    return rows, one, ns, ps, df
 
 def mk_dash(ws, df, t):
     ws.sheet_view.showGridLines=False
@@ -750,7 +759,7 @@ def mk_opinion(ws, df, t, doc_lang):
     if '추천여부' in df.columns:
         kw_rows,one_line,ns,ps=analyze_kw_steam(df,t)
     else:
-        kw_rows,one_line,ns,ps=analyze_kw(df,t)
+        kw_rows,one_line,ns,ps,df=analyze_kw(df,t)
     sum_row=hrow+len(categories)+2
     ws.merge_cells(start_row=sum_row,start_column=1,end_row=sum_row,end_column=12)
     c=ws.cell(row=sum_row,column=1,value=f'{t["sum_pfx"]}{one_line}')
@@ -798,6 +807,7 @@ def mk_opinion(ws, df, t, doc_lang):
         pt=DataPoint(idx=idx); pt.graphicalProperties.solidFill=C_GREEN; pb.series[0].dPt.append(pt)
     ws.add_chart(pb,f'G{cr+1}')
     _cw(ws,{'A':10,'B':18,'C':10,'D':10,'E':14,'F':14,'G':14,'H':14,'I':16,'J':16,'K':16,'L':16})
+    return df  # 감성분류 컬럼 포함된 df 반환
 
 def mk_raw(ws, df, t):
     ws.sheet_view.showGridLines=False; ws.freeze_panes='A2'
@@ -805,7 +815,9 @@ def mk_raw(ws, df, t):
     sent_label = '감성분류' if is_kr else '感情分類'
     cols=[t['c_id'],t['c_user'],t['c_score'],t['c_content'],t['c_date'],
           t['c_month'],t['c_like'],t['c_reply'],t['c_rdate'],t['c_ver'],sent_label]
-    dk=['리뷰ID','사용자','평점','내용','작성일','작성월','좋아요','개발사답변','답변일','앱버전']
+    dk_base=['리뷰ID','사용자','평점','내용','작성일','작성월','좋아요','개발사답변','답변일','앱버전']
+    # 감성분류 컬럼이 df에 있으면 포함
+    dk = dk_base + ['감성분류'] if '감성분류' in df.columns else dk_base
     _hr(ws,1,cols,height=20)
     for i,row in enumerate(dataframe_to_rows(df[dk],index=False,header=False),2):
         sc=row[2]; bg=C_LGREEN if sc>=4 else (C_YELLOW if sc==3 else C_LRED)
@@ -817,12 +829,14 @@ def mk_raw(ws, df, t):
             if j==3:
                 cc=C_GREEN if sc>=4 else (C_ORANGE if sc==3 else C_RED)
                 c.font=Font(bold=True,size=9,color=cc,name='Arial'); c.alignment=_al()
-        # K열 (11번째): 감성 분류 결과
+        # K열 (11번째): 실제 감성분류 결과 (평점40%+텍스트60% 기준)
+        raw_sent = row[10] if len(row) > 10 else ''  # df에 감성분류 컬럼이 있는 경우
+        if not raw_sent: raw_sent = '긍정' if sc>=4 else ('중립' if sc==3 else '부정')
         if is_kr:
-            sent_val = '🟢 긍정' if sc>=4 else ('😐 중립' if sc==3 else '🔴 부정')
+            sent_val = f'🟢 긍정' if raw_sent=='긍정' else ('😐 중립' if raw_sent=='중립' else '🔴 부정')
         else:
-            sent_val = '🟢 肯定' if sc>=4 else ('😐 中立' if sc==3 else '🔴 否定')
-        sent_fg = C_GREEN if sc>=4 else (C_ORANGE if sc==3 else C_RED)
+            sent_val = f'🟢 肯定' if raw_sent=='긍정' else ('😐 中立' if raw_sent=='중립' else '🔴 否定')
+        sent_fg = C_GREEN if raw_sent=='긍정' else (C_ORANGE if raw_sent=='중립' else C_RED)
         c=ws.cell(row=i,column=11,value=sent_val)
         c.fill=_fill(bg); c.border=_bd()
         c.font=Font(bold=True,size=9,color=sent_fg,name='Arial')
@@ -1180,8 +1194,10 @@ def gen_excel_bytes(df, doc_lang, is_steam=False):
         ws5=wb.create_sheet(sh_crit); mk_criteria_steam(ws5,t)
     else:
         ws1=wb.active; ws1.title=t['sh_dash']; mk_dash(ws1,df,t)
-        ws2=wb.create_sheet(t['sh_op']);   mk_opinion(ws2,df,t,doc_lang)
-        ws3=wb.create_sheet(t['sh_raw']);  mk_raw(ws3,df,t)
+        ws2=wb.create_sheet(t['sh_op']);
+        df_classified = mk_opinion(ws2,df,t,doc_lang)  # 감성분류 결과 포함된 df 반환
+        df_for_raw = df_classified if df_classified is not None else df
+        ws3=wb.create_sheet(t['sh_raw']);  mk_raw(ws3,df_for_raw,t)
         ws4=wb.create_sheet(t['sh_stat']); mk_stats(ws4,df,t)
         sh_crit = '📐 분석기준' if doc_lang=='KR' else '📐 分析基準'
         ws5=wb.create_sheet(sh_crit); mk_criteria(ws5,t)
@@ -1619,7 +1635,7 @@ def analyze_kw_steam(df, t):
     elif pos_r>0.4: mood=t['mood_mix'].format(pos_r*100, neg_r*100)
     else:           mood=t['mood_neg'].format(neg_r*100)
     one=t['one_line_fmt'].format(top_pos, top_neg, pos_r*5, mood)
-    return rows, one, ns, ps
+    return rows, one, ns, ps, df
 
 def parse_appstore_id(text):
     '''앱스토어 앱 ID 추출 (숫자)'''
