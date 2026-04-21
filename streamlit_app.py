@@ -348,131 +348,190 @@ def _hidden(ws, row, col, val):
     return c
 
 def evaluate_5_insights(df, lang):
-    texts_neg=' '.join(df[df['평점']<=2]['내용'].dropna().tolist()).lower()
-    texts_pos=' '.join(df[df['평점']>=4]['내용'].dropna().tolist()).lower()
-    def count(text,kws): return sum(1 for k in kws if k in text)
+    """비율 기반 변별력 있는 종합 인사이트 생성"""
+    total = len(df)
+    if total == 0: total = 1
+
+    neg_df = df[df['평점']<=2]
+    pos_df = df[df['평점']>=4]
+    n_neg = len(neg_df); n_pos = len(pos_df)
+
+    texts_neg = ' '.join(neg_df['내용'].dropna().tolist()).lower()
+    texts_pos = ' '.join(pos_df['내용'].dropna().tolist()).lower()
+    texts_all = ' '.join(df['내용'].dropna().tolist()).lower()
+
+    def cnt(text, kws): return sum(1 for k in kws if k in text)
+    # 비율 기반: 전체 리뷰 대비 키워드 등장 리뷰 수 비율
+    def ratio(df_sub, kws):
+        if len(df_sub) == 0: return 0.0
+        hit = df_sub['내용'].dropna().apply(lambda x: any(k in str(x).lower() for k in kws)).sum()
+        return hit / total  # 전체 리뷰 대비 비율
+
     if lang=='KR':
-        c_pos=count(texts_pos,['그래픽','스토리','원작','아트','세계관','캐릭터','퀄리티','감동'])
-        c_neg=count(texts_neg,['스토리','콘텐츠','부실','빈약','스킵','노잼'])
-        if c_pos>=5 and c_neg<3: ce='✅ 합격점 — 그래픽·스토리·IP 재현 만족도 높음'; cc=C_GREEN
-        elif c_neg>=5: ce='❌ 부족 — 스토리·콘텐츠 관련 불만 다수'; cc=C_RED
-        else: ce='⚠️ 보통 — 일부 만족, 개선 여지 있음'; cc=C_ORANGE
-        t_neg=count(texts_neg,['렉','버그','최적화','발열','튕기','오류','사운드','끊김'])
-        if t_neg>=10: te='❌ 심각한 수준 — 최적화·버그·사운드 불만 매우 많음'; tc=C_RED
-        elif t_neg>=5: te='⚠️ 주의 필요 — 기술적 이슈 다수 보고됨'; tc=C_ORANGE
-        else: te='✅ 양호 — 기술적 불만 적음'; tc=C_GREEN
-        e_neg=count(texts_neg,['과금','뽑기','확률','재화','천장','현질','비싸'])
-        if e_neg>=8: ee='⚠️ 강한 불만 — 뽑기 단가·재화 수급에 강한 불만'; ec=C_ORANGE
-        elif e_neg>=4: ee='⚠️ 불만 있음 — 과금 구조 개선 요구 존재'; ec=C_ORANGE
-        else: ee='✅ 양호 — 과금 관련 불만 적음'; ec=C_GREEN
-        m_neg=count(texts_neg,['모바일','폰으로','조작','버튼','ui','터치'])
-        if m_neg>=6: pe='📵 모바일보다 PC/콘솔 권장 여론 형성'; pc=C_BLUE
-        elif m_neg>=3: pe='⚠️ 모바일 최적화 개선 요구'; pc=C_ORANGE
-        else: pe='✅ 플랫폼 불만 적음'; pc=C_GREEN
-        b_neg=count(texts_neg,['운영','공지','방치','노답','최악','환불'])
-        if b_neg>=5: be='⚠️ 브랜드 불신 — 운영사 관련 부정 여론 존재'; bc=C_ORANGE
-        elif count(texts_pos,['운영','감사','친절'])>=3: be='✅ 브랜드 신뢰 — 운영 관련 긍정 반응'; bc=C_GREEN
-        else: be='😐 중립 — 브랜드 관련 언급 적음'; bc=C_BLUE
-        return [('콘텐츠 (IP·그래픽·스토리)',ce,cc),('기술 (최적화·버그·사운드)',te,tc),
-                ('경제 (뽑기·재화 수급)',ee,ec),('플랫폼',pe,pc),('브랜드',be,bc)]
+        # ── 콘텐츠 (IP·그래픽·스토리)
+        r_c_pos = ratio(pos_df, ['그래픽','스토리','아트','세계관','캐릭터','퀄리티','감동','원작'])
+        r_c_neg = ratio(neg_df, ['스토리','콘텐츠','노잼','지루','부실','빈약'])
+        if r_c_pos >= 0.15 and r_c_neg < 0.05:
+            ce = f'✅ 만족도 높음 — 긍정 리뷰 중 {r_c_pos*100:.0f}%가 그래픽·스토리 호평'; cc=C_GREEN
+        elif r_c_neg >= 0.10:
+            ce = f'❌ 불만 두드러짐 — 전체의 {r_c_neg*100:.0f}%가 스토리·콘텐츠 부족 지적'; cc=C_RED
+        elif r_c_pos >= 0.08:
+            ce = f'⚠️ 그래픽 호평 우세, 스토리 개선 여지 ({r_c_pos*100:.0f}% 언급)'; cc=C_ORANGE
+        else:
+            ce = f'😐 콘텐츠 관련 뚜렷한 반응 없음 (언급률 낮음)'; cc=C_BLUE
+
+        # ── 기술 (최적화·버그)
+        r_t = ratio(df, ['렉','버그','최적화','발열','튕기','오류','끊김','먹통'])
+        if r_t >= 0.15:
+            te = f'❌ 심각 — 전체 {r_t*100:.0f}%가 버그·최적화 문제 보고'; tc=C_RED
+        elif r_t >= 0.08:
+            te = f'⚠️ 주의 — 전체 {r_t*100:.0f}%에서 기술적 이슈 언급'; tc=C_ORANGE
+        elif r_t >= 0.03:
+            te = f'😐 소수 보고 — 기술적 이슈 언급 {r_t*100:.0f}% (소수)'; tc=C_BLUE
+        else:
+            te = f'✅ 양호 — 기술 관련 불만 거의 없음 ({r_t*100:.0f}%)'; tc=C_GREEN
+
+        # ── 경제 (과금·뽑기)
+        r_e = ratio(neg_df, ['과금','뽑기','확률','재화','천장','현질','비싸','수금'])
+        if r_e >= 0.15:
+            ee = f'❌ 과금 구조 강한 불만 — 부정 리뷰 중 {r_e*100:.0f}%가 과금 지적'; ec=C_RED
+        elif r_e >= 0.08:
+            ee = f'⚠️ 과금 불만 존재 — 부정 리뷰 {r_e*100:.0f}% 과금 언급'; ec=C_ORANGE
+        elif r_e >= 0.03:
+            ee = f'😐 소수 불만 — 과금 언급 {r_e*100:.0f}% 수준'; ec=C_BLUE
+        else:
+            ee = f'✅ 과금 불만 적음 ({r_e*100:.0f}%)'; ec=C_GREEN
+
+        # ── 플랫폼·조작
+        r_p = ratio(df, ['조작','버튼','ui','터치','컨트롤러','모바일','폰으로'])
+        if r_p >= 0.10:
+            pe = f'⚠️ 조작·UI 개선 요구 — 전체 {r_p*100:.0f}%가 조작계 불만'; pc=C_ORANGE
+        elif r_p >= 0.05:
+            pe = f'😐 조작 관련 일부 의견 ({r_p*100:.0f}%)'; pc=C_BLUE
+        else:
+            pe = f'✅ 조작·플랫폼 불만 적음 ({r_p*100:.0f}%)'; pc=C_GREEN
+
+        # ── 브랜드·운영
+        r_b_neg = ratio(neg_df, ['운영','공지','방치','소통없','환불','최악'])
+        r_b_pos = ratio(pos_df, ['운영','감사','친절','빠른','업데이트'])
+        if r_b_neg >= 0.10:
+            be = f'⚠️ 운영 불신 — 부정 리뷰 {r_b_neg*100:.0f}%가 운영 문제 지적'; bc=C_ORANGE
+        elif r_b_pos >= 0.05:
+            be = f'✅ 운영 긍정 반응 — 긍정 리뷰 {r_b_pos*100:.0f}%가 운영 호평'; bc=C_GREEN
+        else:
+            be = f'😐 운영 관련 뚜렷한 여론 없음'; bc=C_BLUE
+
+        return [('콘텐츠 (IP·그래픽·스토리)',ce,cc),
+                ('기술 (최적화·버그·사운드)',te,tc),
+                ('경제 (과금·뽑기·재화)',ee,ec),
+                ('조작·플랫폼',pe,pc),
+                ('브랜드·운영',be,bc)]
     else:
-        c_pos=count(texts_pos,['グラフィック','ストーリー','アート','世界観','キャラ','クオリティ'])
-        c_neg=count(texts_neg,['ストーリー','コンテンツ','つまらない'])
-        if c_pos>=5 and c_neg<3: ce='✅ 合格 — グラフィック・ストーリー・IP再現の満足度高い'; cc=C_GREEN
-        elif c_neg>=5: ce='❌ 不足 — ストーリー・コンテンツへの不満多数'; cc=C_RED
-        else: ce='⚠️ 普通 — 一部満足、改善余地あり'; cc=C_ORANGE
-        t_neg=count(texts_neg,['重い','バグ','最適化','発熱','クラッシュ','エラー'])
-        if t_neg>=10: te='❌ 深刻 — 最適化・バグ・サウンドへの不満が非常に多い'; tc=C_RED
-        elif t_neg>=5: te='⚠️ 要注意 — 技術的問題の報告多数'; tc=C_ORANGE
-        else: te='✅ 良好 — 技術的不満少ない'; tc=C_GREEN
-        e_neg=count(texts_neg,['課金','ガチャ','確率','天井','高い'])
-        if e_neg>=8: ee='⚠️ 強い不満 — ガチャ単価・資源供給への強い不満'; ec=C_ORANGE
-        elif e_neg>=4: ee='⚠️ 不満あり — 課金構造の改善要求あり'; ec=C_ORANGE
-        else: ee='✅ 良好 — 課金関連不満少ない'; ec=C_GREEN
-        m_neg=count(texts_neg,['スマホ','モバイル','操作','ボタン','ui'])
-        if m_neg>=6: pe='📵 モバイルよりPC/コンソール推奨の世論形成'; pc=C_BLUE
-        elif m_neg>=3: pe='⚠️ モバイル最適化改善要求'; pc=C_ORANGE
-        else: pe='✅ プラットフォーム不満少ない'; pc=C_GREEN
-        b_neg=count(texts_neg,['運営','放置','最悪','返金'])
-        if b_neg>=5: be='⚠️ ブランド不信 — 運営への否定的世論あり'; bc=C_ORANGE
-        else: be='😐 中立 — ブランド関連言及少ない'; bc=C_BLUE
-        return [('コンテンツ (IP・グラフィック・ストーリー)',ce,cc),('技術 (最適化・バグ・サウンド)',te,tc),
-                ('経済 (ガチャ・資源供給)',ee,ec),('プラットフォーム',pe,pc),('ブランド',be,bc)]
+        # ── JP 버전 동일 구조
+        r_c_pos = ratio(pos_df, ['グラフィック','ストーリー','アート','世界観','キャラ','クオリティ'])
+        r_c_neg = ratio(neg_df, ['ストーリー','コンテンツ','つまらない','薄い'])
+        if r_c_pos >= 0.15 and r_c_neg < 0.05:
+            ce=f'✅ 満足度高 — 肯定レビューの{r_c_pos*100:.0f}%がグラフィック・ストーリー好評'; cc=C_GREEN
+        elif r_c_neg >= 0.10:
+            ce=f'❌ 不満目立つ — 全体の{r_c_neg*100:.0f}%がストーリー不足指摘'; cc=C_RED
+        else:
+            ce=f'⚠️ グラフィック好評、ストーリー改善余地 ({r_c_pos*100:.0f}%言及)'; cc=C_ORANGE
+
+        r_t = ratio(df, ['重い','バグ','最適化','発熱','クラッシュ','エラー','フリーズ'])
+        if r_t >= 0.15:
+            te=f'❌ 深刻 — 全体の{r_t*100:.0f}%がバグ・最適化問題報告'; tc=C_RED
+        elif r_t >= 0.08:
+            te=f'⚠️ 要注意 — 全体の{r_t*100:.0f}%で技術的問題言及'; tc=C_ORANGE
+        else:
+            te=f'✅ 良好 — 技術的不満少ない({r_t*100:.0f}%)'; tc=C_GREEN
+
+        r_e = ratio(neg_df, ['課金','ガチャ','確率','天井','高い','搾取'])
+        if r_e >= 0.15:
+            ee=f'❌ 課金構造への強い不満 — 否定レビューの{r_e*100:.0f}%が言及'; ec=C_RED
+        elif r_e >= 0.08:
+            ee=f'⚠️ 課金不満あり — {r_e*100:.0f}%が課金言及'; ec=C_ORANGE
+        else:
+            ee=f'✅ 課金不満少ない({r_e*100:.0f}%)'; ec=C_GREEN
+
+        r_p = ratio(df, ['操作','ボタン','UI','タッチ','コントローラー'])
+        if r_p >= 0.10:
+            pe=f'⚠️ 操作・UI改善要求 — 全体の{r_p*100:.0f}%が言及'; pc=C_ORANGE
+        else:
+            pe=f'✅ 操作・プラットフォーム不満少ない({r_p*100:.0f}%)'; pc=C_GREEN
+
+        r_b_neg = ratio(neg_df, ['運営','放置','最悪','返金','ひどい'])
+        r_b_pos = ratio(pos_df, ['運営','ありがとう','丁寧','早い'])
+        if r_b_neg >= 0.10:
+            be=f'⚠️ 運営不信 — 否定レビューの{r_b_neg*100:.0f}%が運営問題指摘'; bc=C_ORANGE
+        elif r_b_pos >= 0.05:
+            be=f'✅ 運営好評 — 肯定レビューの{r_b_pos*100:.0f}%が運営を称賛'; bc=C_GREEN
+        else:
+            be=f'😐 運営関連の明確な世論なし'; bc=C_BLUE
+
+        return [('コンテンツ (IP・グラフィック・ストーリー)',ce,cc),
+                ('技術 (最適化・バグ・サウンド)',te,tc),
+                ('経済 (ガチャ・課金・資源)',ee,ec),
+                ('操作・プラットフォーム',pe,pc),
+                ('ブランド・運営',be,bc)]
 
 def analyze_kw(df, t):
     # 여론분석 시 이상 리뷰 제외 (전체리뷰 시트에는 영향 없음)
     df_analysis, removed = filter_abnormal_reviews(df)
     if removed > 0:
         df = df_analysis  # 분석용 df만 교체
-    # ── 평점 55% + sentiment_score 45% 조합 버킷 분류 (v2)
-    _POS_KW = ['재밌','좋아','갓겜','꿀잼','대박','짱','추천','만족','감동',
-               '몰입','좋음','좋네','좋다','재미있','예쁘','퀄리티','굿',
-               '굳','잼남','잼있','존잼','인생겜','명작','강추','중독','힐링',
-               '신남','흥미롭','기대','훌륭','완성도','재밌네','재밌어']
-    # 강력 부정 키워드 (가중치 2배)
-    _NEG_STRONG = ['비추','노잼','쓰레기','바로삭제','삭제함','지웠','하차','접었',
-                   '최악','망겜','돈마블','추억팔이','재미없','흥미없','흥미못',
-                   '더럽게','짭겜','실망스럽','할이유없','꽝','노답',
-                   '아닌듯','아니네','아닌것같','아닌것','아닌거같','아니야',
-                   '별로','메리트없','할필요없','굳이할','이유없']
-    # 일반 부정 키워드
-    _NEG_KW = ['버그','짜증','불편','렉','서운','아쉽','실망','후회',
-               '비싸','확률','과금','현질','뽑기','런함','접음',
-               '사기','기만','방치','운영','환불','호구','흑우','도박','인플레',
-               '이격','믿어본다','기대이하','낙담','허탈',
-               '난잡','없고','이쁘지도','차이없','별차이','의문',
-               '소통없','개발못','한계','돈만','수금','뜯','갈취',
-               '짝퉁','배낀','배껴','복붙','메리트없','굳이']
-    _NEGATION = ['없어요','없음','없다','없어','안 ','안됨','안돼','못 ','전혀','하나도','별로없']
-    # 과거→현재 부정 패턴 (옛날엔 좋았지만 지금은 나쁨)
-    _PAST_NEG = ['옛날엔','예전엔','초창기','처음엔','전에는','예전에가','옛날에가',
-                 '1편이','예전이','그때는','그때당시']
+    # ── 감성분류 엔진 v3: 평점 우선 + 텍스트 보정
+    _PS3 = ['갓겜','인생겜','명작','존잼','꿀잼','강추','최고','대박','훌륭','완성도높']
+    _PN3 = ['재밌','좋아','만족','감동','몰입','좋음','좋네','좋다','재미있','예쁘',
+            '퀄리티','굿','굳','잼남','잼있','중독','힐링','신남','흥미롭','훌륭']
+    _NS3 = ['비추','노잼','쓰레기','바로삭제','삭제함','지웠습니다','지웠','하차',
+            '최악','망겜','재미없','흥미없','더럽게','실망스럽','접었','접음','런함',
+            '아닌듯','아니네','별로','욕만','꽝','노답','꺼집니다','꺼짐']
+    _NN3 = ['버그','짜증','불편','렉','아쉽','실망','후회','비싸','확률','과금',
+            '현질','뽑기','사기','기만','방치','운영','환불','호구','흑우',
+            '도박','이격','낙담','허탈','난잡','의문','한계','뜯','갈취',
+            '짝퉁','먹통','저장안','초기화','발열','추억팔이','돈마블']
+    _NEG3 = ['없어요','없음','없다','없어','안 ','안됨','안돼','못 ','전혀','하나도','별로없','안되는']
+    _PNEG_CTX = ['까진 아니','은 아니','은 아님','는 아니','는 아님','이 아니']
 
-    def _quick_score(text, score_base):
-        '''평점 55% + 텍스트 45% 조합 (개선 v2)'''
-        t_low = str(text).lower()
-        txt_score = 0.0
+    def _classify_v3(text, rating):
+        t = str(text).lower()
+        ps = 0
+        for k in _PS3:
+            if k in t:
+                idx2 = t.find(k)
+                ctx = t[max(0,idx2-6):idx2+len(k)+10]
+                if any(p in ctx for p in _PNEG_CTX): continue
+                ps += 1
+        ns = sum(1 for k in _NS3 if k in t)
+        pn = sum(1 for k in _PN3 if k in t)
+        nn = 0
+        for k in _NN3:
+            if k in t:
+                idx2 = t.find(k)
+                surr = t[max(0,idx2-8):idx2+len(k)+8]
+                if any(n in surr for n in _NEG3): pn += 0.5
+                else: nn += 1
+        pos_s = ps*2 + pn; neg_s = ns*2 + nn
+        has_kw = (pos_s + neg_s) > 0
+        if rating in [1,2]:   base='neg'
+        elif rating in [4,5]: base='pos'
+        else:                 base='neu'
+        if base == 'neu':
+            if ns >= 1:                  return 'neg'
+            elif ps >= 1:                return 'pos'
+            elif neg_s - pos_s >= 2:     return 'neg'
+            elif pos_s - neg_s >= 2:     return 'pos'
+            return 'neu'
+        if base == 'neg':
+            if ps >= 2: return 'neu'
+            return 'neg'
+        if base == 'pos':
+            if ns >= 2:                               return 'neu'
+            if nn >= 2 and pos_s == 0:                return 'neg'
+            if not has_kw and len(t.replace(' ',''))<=15 and rating==4: return 'neu'
+            return 'pos'
+        return base
 
-        # 과거긍정/현재부정 패턴 감지
-        has_past_pos = any(p in t_low for p in _PAST_NEG)
-
-        # 타인 추천 패턴 (자신이 아닌 타인 기준 표현)
-        _OTHER_PATTERNS = ['분들은','분들이','사람은','사람들은','좋아할듯','좋을듯',
-                           '괜찮을듯','재밌을듯','즐길듯']
-
-        # 긍정 키워드
-        for k in _POS_KW:
-            if k in t_low:
-                idx2 = t_low.find(k)
-                context = t_low[max(0,idx2-20):idx2+len(k)+15]
-                # 과거 표현과 함께 나오면 가중치 0
-                if has_past_pos and any(p in context for p in _PAST_NEG):
-                    continue
-                # 타인 추천 표현이면 가중치 0
-                if any(p in context for p in _OTHER_PATTERNS):
-                    continue
-                txt_score += 1.0
-
-        # 강력 부정 키워드 (가중치 2배)
-        for k in _NEG_STRONG:
-            if k in t_low: txt_score -= 2.0
-
-        # 일반 부정 키워드
-        for k in _NEG_KW:
-            if k in t_low:
-                idx2 = t_low.find(k)
-                surr = t_low[max(0,idx2-8):idx2+len(k)+8]
-                if any(n in surr for n in _NEGATION):
-                    txt_score += 0.5  # 부정어+부정KW = 약한 긍정
-                else:
-                    txt_score -= 1.0
-
-        # 평점 55% + 텍스트 45% (평점 신뢰도 상향)
-        rating_score = (score_base - 3)  # -2 ~ +2
-        combined = rating_score * 0.55 + txt_score * 0.45
-        return combined
-
-    # 임계값 0.3→0.1로 하향 (애매한 케이스를 더 정확히 분류)
     neg_indices = []
     pos_indices = []
     neu_indices = []
@@ -480,19 +539,18 @@ def analyze_kw(df, t):
         if pd.isna(row['내용']) or str(row['내용']).strip() == '':
             neu_indices.append(idx)
             continue
-        score = _quick_score(row['내용'], row['평점'])
-        if score < -0.1:
-            neg_indices.append(idx)
-        elif score > 0.1:
-            pos_indices.append(idx)
-        else:
-            neu_indices.append(idx)
+        bucket = _classify_v3(row['내용'], row['평점'])
+        if bucket == 'neg':   neg_indices.append(idx)
+        elif bucket == 'pos': pos_indices.append(idx)
+        else:                 neu_indices.append(idx)
 
     # 리뷰별 감성분류 결과를 df에 저장 (전체리뷰 K열에 사용)
     df = df.copy()
     df['감성분류'] = '중립'
     df.loc[pos_indices, '감성분류'] = '긍정'
     df.loc[neg_indices, '감성분류'] = '부정'
+    # idx → positional 변환 안전 처리
+    df = df.reset_index(drop=True)
 
     neg_tx = df.loc[neg_indices, '내용'].dropna()
     pos_tx = df.loc[pos_indices, '내용'].dropna()
